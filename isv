@@ -1,0 +1,8055 @@
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local ContextActionService = game:GetService("ContextActionService")
+local HttpService = game:GetService("HttpService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CoreGui = game:GetService("CoreGui")
+local TeleportService = game:GetService("TeleportService")
+local Lighting = game:GetService("Lighting")
+
+local LocalPlayer = Players.LocalPlayer
+
+local OWNER_IDS = {}
+local AUTH_RANK = {}
+
+local IsAuthUser = false
+local IsOwnerUser = false
+
+local BLACK = Color3.fromRGB(231, 56, 149)
+local PANEL = Color3.fromRGB(190, 35, 118)
+local CONTROL = Color3.fromRGB(215, 60, 140)
+local WHITE = Color3.fromRGB(255, 255, 255)
+local GREY = Color3.fromRGB(255, 205, 230)
+local DIM = GREY
+local OFF = Color3.fromRGB(120, 25, 80)
+local ROW_BG = Color3.fromRGB(170, 30, 105)
+local ROW_TRANSP = 0.35
+local GOOD = Color3.fromRGB(120, 220, 140)
+local BAD = Color3.fromRGB(230, 110, 110)
+
+local WINDOW_ALPHA = 0.22
+local CARD_ALPHA = 0.35
+
+local WIDTH, HEIGHT = 600, 390
+local MIN_W, MIN_H = 440, 300
+local MAX_W, MAX_H = 900, 720
+
+local PAD = 8
+local HEADER_H = 40
+local SIDEBAR_W = 150
+local RADIUS = 18
+local INNER = 12
+
+local function UTrunc(Text, Count)
+	local Ok, Pos = pcall(utf8.offset, Text, Count + 1)
+
+	if Ok and Pos then
+		return string.sub(Text, 1, Pos - 1)
+	end
+
+	return Text
+end
+
+local CONFIG_FILE = "IsaevConfig.json"
+local Config = {}
+local SaveQueued = false
+
+pcall(function()
+	if type(isfile) == "function" and type(readfile) == "function" and isfile(CONFIG_FILE) then
+		local Decoded = HttpService:JSONDecode(readfile(CONFIG_FILE))
+
+		if type(Decoded) == "table" then
+			Config = Decoded
+		end
+	end
+end)
+
+Config.HideTags = nil
+
+local function SaveConfig()
+	if SaveQueued then
+		return
+	end
+
+	SaveQueued = true
+
+	task.delay(0.5, function()
+		SaveQueued = false
+
+		pcall(function()
+			if type(writefile) == "function" then
+				writefile(CONFIG_FILE, HttpService:JSONEncode(Config))
+			end
+		end)
+	end)
+end
+
+local function New(class, props, parent)
+	local inst = Instance.new(class)
+	for k, v in pairs(props) do
+		inst[k] = v
+	end
+	inst.Parent = parent
+	return inst
+end
+
+local function Corner(parent, radius)
+	return New("UICorner", {
+		CornerRadius = typeof(radius) == "UDim" and radius or UDim.new(0, radius),
+	}, parent)
+end
+
+local function Stroke(parent, color, thickness, transparency)
+	return New("UIStroke", {
+		Color = color,
+		Thickness = thickness,
+		Transparency = transparency,
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+	}, parent)
+end
+
+local function IsPress(input)
+	return input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.UserInputType == Enum.UserInputType.Touch
+end
+
+local S = {
+	A1 = WHITE,
+	A2 = GREY,
+}
+
+local Shared = {}
+Shared.NoWeaveDelay = true
+Shared.IgnoreKnockedOn = false
+Shared.IgnoreTeamOn = false
+
+Shared.IsTeammate = function(Pl)
+	if not Pl or Pl == LocalPlayer then
+		return false
+	end
+
+	local MyOwner = LocalPlayer:GetAttribute("PartyOwner") or 0
+	local TheirOwner = Pl:GetAttribute("PartyOwner") or 0
+
+	if MyOwner ~= 0 and (TheirOwner == MyOwner or Pl.UserId == MyOwner) then
+		return true
+	end
+
+	if TheirOwner ~= 0 and TheirOwner == LocalPlayer.UserId then
+		return true
+	end
+
+	return false
+end
+
+Shared.ShouldIgnore = function(Model, Root)
+	if not Model then
+		return false
+	end
+
+	if Shared.IgnoreTeamOn and Shared.IsTeammate(Players:GetPlayerFromCharacter(Model)) then
+		return true
+	end
+
+	if Shared.IgnoreKnockedOn and Shared.IsDowned and Root and Shared.IsDowned(Root) then
+		return true
+	end
+
+	return false
+end
+
+local Connections = {}
+local Cleanups = {}
+local UIAlive = true
+
+local function Conn(c)
+	table.insert(Connections, c)
+	return c
+end
+
+local function OnCleanup(fn)
+	table.insert(Cleanups, fn)
+end
+
+local function RunSection(Fn)
+	local Ok, Err = pcall(Fn)
+
+end
+
+local Refreshers = {}
+local FeatureControls = {}
+local ActiveSlider = nil
+
+local function Apply()
+	for _, fn in ipairs(Refreshers) do
+		fn()
+	end
+end
+
+local OLD_NAME = "NovaUI"
+local old = CoreGui:FindFirstChild(OLD_NAME)
+if old then
+	old:Destroy()
+end
+
+local ScreenGui = New("ScreenGui", {
+	Name = OLD_NAME,
+	ResetOnSpawn = false,
+	IgnoreGuiInset = true,
+	ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+	DisplayOrder = 50,
+}, CoreGui)
+
+ScreenGui.Destroying:Connect(function()
+	UIAlive = false
+
+	for _, c in ipairs(Connections) do
+		pcall(function()
+			c:Disconnect()
+		end)
+	end
+
+	for _, fn in ipairs(Cleanups) do
+		pcall(fn)
+	end
+end)
+
+local Viewport = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280, 720)
+local IsMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+local startW = IsMobile and math.min(WIDTH, math.floor(Viewport.X - 40)) or WIDTH
+local startH = IsMobile and math.min(HEIGHT, math.floor(Viewport.Y * 0.8)) or HEIGHT
+
+local Glow = New("Frame", {
+	Name = "Glow",
+	Size = UDim2.fromOffset(startW, startH),
+	Position = UDim2.new(0.5, -startW / 2, 0.5, -startH / 2),
+	BackgroundTransparency = 1,
+	BorderSizePixel = 0,
+	ZIndex = 1,
+}, ScreenGui)
+Corner(Glow, RADIUS)
+local GlowOuter = Stroke(Glow, WHITE, 10, 0.94)
+local GlowInner = Stroke(Glow, WHITE, 3, 0.88)
+
+local Main = New("CanvasGroup", {
+	Name = "Main",
+	Size = UDim2.fromOffset(startW, startH),
+	Position = UDim2.new(0.5, -startW / 2, 0.5, -startH / 2),
+	BackgroundColor3 = BLACK,
+	BackgroundTransparency = WINDOW_ALPHA,
+	BorderSizePixel = 0,
+	GroupTransparency = 0,
+	ZIndex = 2,
+	Visible = false,
+}, ScreenGui)
+Corner(Main, RADIUS)
+Stroke(Main, WHITE, 1, 0.75)
+
+local CONTENT_TOP = PAD * 2 + HEADER_H
+
+local Header = New("Frame", {
+	Name = "Header",
+	Position = UDim2.new(0, PAD, 0, PAD),
+	Size = UDim2.new(1, -PAD * 2, 0, HEADER_H),
+	BackgroundColor3 = PANEL,
+	BackgroundTransparency = CARD_ALPHA,
+	BorderSizePixel = 0,
+	Active = true,
+	ZIndex = 3,
+}, Main)
+Corner(Header, INNER)
+Stroke(Header, WHITE, 1, 0.9)
+
+local Dot = New("Frame", {
+	Size = UDim2.fromOffset(8, 8),
+	Position = UDim2.new(0, 14, 0.5, -4),
+	BackgroundColor3 = WHITE,
+	BorderSizePixel = 0,
+	ZIndex = 4,
+}, Header)
+Corner(Dot, 4)
+
+New("TextLabel", {
+	Size = UDim2.new(0, 120, 1, 0),
+	Position = UDim2.new(0, 30, 0, 0),
+	BackgroundTransparency = 1,
+	Text = "WMS",
+	TextColor3 = WHITE,
+	Font = Enum.Font.GothamBold,
+	TextSize = 13,
+	TextXAlignment = Enum.TextXAlignment.Left,
+	ZIndex = 4,
+}, Header)
+
+New("TextBox", {
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Size = UDim2.fromOffset(190, 26),
+	Position = UDim2.new(0.5, 0, 0.5, 0),
+	BackgroundColor3 = CONTROL,
+	BackgroundTransparency = 0.3,
+	Text = "",
+	PlaceholderText = "white masquerade",
+	PlaceholderColor3 = GREY,
+	TextColor3 = WHITE,
+	Font = Enum.Font.GothamMedium,
+	TextSize = 11,
+	ClearTextOnFocus = false,
+	BorderSizePixel = 0,
+	ZIndex = 4,
+}, Header)
+Corner(Header:FindFirstChildOfClass("TextBox"), 9)
+New("UIPadding", { PaddingLeft = UDim.new(0, 10) }, Header:FindFirstChildOfClass("TextBox"))
+
+local PROFILE_H = 30
+local AVATAR = 22
+local PROFILE_PAD = 4
+local NAME_W = 92
+
+local Profile = New("Frame", {
+	Name = "Profile",
+	AnchorPoint = Vector2.new(1, 0.5),
+	Size = UDim2.fromOffset(PROFILE_PAD + AVATAR + 8 + NAME_W + PROFILE_PAD, PROFILE_H),
+	Position = UDim2.new(1, -8, 0.5, 0),
+	BackgroundColor3 = CONTROL,
+	BackgroundTransparency = 0.3,
+	BorderSizePixel = 0,
+	ZIndex = 4,
+}, Header)
+Corner(Profile, PROFILE_H / 2)
+Stroke(Profile, WHITE, 1, 0.85)
+
+local okThumb, thumbImage = pcall(function()
+	return Players:GetUserThumbnailAsync(LocalPlayer.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size100x100)
+end)
+
+local Avatar = New("ImageLabel", {
+	Size = UDim2.fromOffset(AVATAR, AVATAR),
+	Position = UDim2.new(0, PROFILE_PAD, 0.5, -AVATAR / 2),
+	BackgroundColor3 = PANEL,
+	BorderSizePixel = 0,
+	Image = okThumb and thumbImage or "",
+	ZIndex = 5,
+}, Profile)
+Corner(Avatar, AVATAR / 2)
+
+New("TextLabel", {
+	Size = UDim2.new(0, NAME_W, 1, 0),
+	Position = UDim2.new(0, PROFILE_PAD + AVATAR + 8, 0, 0),
+	BackgroundTransparency = 1,
+	Text = LocalPlayer.DisplayName,
+	TextColor3 = WHITE,
+	Font = Enum.Font.GothamBold,
+	TextSize = 14,
+	TextXAlignment = Enum.TextXAlignment.Left,
+	TextTruncate = Enum.TextTruncate.AtEnd,
+	ZIndex = 5,
+}, Profile)
+
+local Sidebar = New("Frame", {
+	Name = "Sidebar",
+	Position = UDim2.new(0, PAD, 0, CONTENT_TOP),
+	Size = UDim2.new(0, SIDEBAR_W, 1, -(CONTENT_TOP + PAD)),
+	BackgroundColor3 = PANEL,
+	BackgroundTransparency = CARD_ALPHA,
+	BorderSizePixel = 0,
+	ClipsDescendants = true,
+	ZIndex = 3,
+}, Main)
+Corner(Sidebar, INNER)
+Stroke(Sidebar, WHITE, 1, 0.9)
+
+local TabList = New("ScrollingFrame", {
+	Position = UDim2.new(0, 8, 0, 8),
+	Size = UDim2.new(1, -16, 1, -54),
+	BackgroundTransparency = 1,
+	BorderSizePixel = 0,
+	ScrollBarThickness = 0,
+	CanvasSize = UDim2.new(0, 0, 0, 0),
+	AutomaticCanvasSize = Enum.AutomaticSize.Y,
+	ClipsDescendants = true,
+	ZIndex = 4,
+}, Sidebar)
+
+New("UIListLayout", {
+	Padding = UDim.new(0, 4),
+	SortOrder = Enum.SortOrder.LayoutOrder,
+}, TabList)
+
+New("Frame", {
+	AnchorPoint = Vector2.new(0, 1),
+	Position = UDim2.new(0, 12, 1, -46),
+	Size = UDim2.new(1, -24, 0, 1),
+	BackgroundColor3 = WHITE,
+	BackgroundTransparency = 0.85,
+	BorderSizePixel = 0,
+	ZIndex = 4,
+}, Sidebar)
+
+local SettingsTabButton = New("TextButton", {
+	AnchorPoint = Vector2.new(0, 1),
+	Position = UDim2.new(0, 8, 1, -8),
+	Size = UDim2.new(1, -16, 0, 32),
+	BackgroundColor3 = WHITE,
+	BackgroundTransparency = 1,
+	Text = "",
+	AutoButtonColor = false,
+	BorderSizePixel = 0,
+	ZIndex = 4,
+}, Sidebar)
+Corner(SettingsTabButton, INNER - 4)
+
+local Content = New("Frame", {
+	Name = "Content",
+	Position = UDim2.new(0, PAD + SIDEBAR_W + PAD, 0, CONTENT_TOP),
+	Size = UDim2.new(1, -(PAD + SIDEBAR_W + PAD + PAD), 1, -(CONTENT_TOP + PAD)),
+	BackgroundColor3 = PANEL,
+	BackgroundTransparency = CARD_ALPHA + 0.1,
+	BorderSizePixel = 0,
+	ClipsDescendants = true,
+	ZIndex = 3,
+}, Main)
+Corner(Content, INNER)
+Stroke(Content, WHITE, 1, 0.92)
+
+local Pages = {}
+local Tabs = {}
+local Selected = nil
+
+local function MakePage()
+	local page = New("ScrollingFrame", {
+		Position = UDim2.new(0, 12, 0, 12),
+		Size = UDim2.new(1, -24, 1, -24),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		ScrollBarThickness = 3,
+		ScrollBarImageColor3 = GREY,
+		CanvasSize = UDim2.new(0, 0, 0, 0),
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		Visible = false,
+		ZIndex = 4,
+	}, Content)
+
+	New("UIListLayout", {
+		Padding = UDim.new(0, 8),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	}, page)
+
+	New("UIPadding", { PaddingRight = UDim.new(0, 6) }, page)
+
+	return page
+end
+
+local function SelectTab(name)
+	if Selected == name then
+		return
+	end
+
+	Selected = name
+
+	for tabName, tab in pairs(Tabs) do
+		local on = tabName == name
+
+		TweenService:Create(tab.button, TweenInfo.new(0.2), {
+			BackgroundTransparency = on and 0.86 or 1,
+		}):Play()
+
+		TweenService:Create(tab.label, TweenInfo.new(0.2), {
+			TextColor3 = on and WHITE or GREY,
+		}):Play()
+
+		TweenService:Create(tab.marker, TweenInfo.new(0.25, Enum.EasingStyle.Back), {
+			Size = on and UDim2.fromOffset(3, 14) or UDim2.fromOffset(3, 0),
+		}):Play()
+	end
+
+	for pageName, page in pairs(Pages) do
+		if pageName == name then
+			page.Visible = true
+			page.Position = UDim2.new(0, 22, 0, 12)
+			TweenService:Create(page, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+				Position = UDim2.new(0, 12, 0, 12),
+			}):Play()
+		else
+			page.Visible = false
+		end
+	end
+end
+
+local function AddTab(name, order, parentButton)
+	local button = parentButton or New("TextButton", {
+		Size = UDim2.new(1, 0, 0, 32),
+		BackgroundColor3 = WHITE,
+		BackgroundTransparency = 1,
+		Text = "",
+		AutoButtonColor = false,
+		LayoutOrder = order or (#Tabs + 1),
+		BorderSizePixel = 0,
+		ClipsDescendants = true,
+		ZIndex = 4,
+	}, TabList)
+	Corner(button, INNER - 4)
+
+	local marker = New("Frame", {
+		Size = UDim2.fromOffset(3, 0),
+		Position = UDim2.new(0, 4, 0.5, -7),
+		BackgroundColor3 = WHITE,
+		BorderSizePixel = 0,
+		ZIndex = 5,
+	}, button)
+	Corner(marker, 2)
+
+	local label = New("TextLabel", {
+		Size = UDim2.new(1, -24, 1, 0),
+		Position = UDim2.new(0, 14, 0, 0),
+		BackgroundTransparency = 1,
+		Text = name,
+		TextColor3 = GREY,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 12,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		ZIndex = 5,
+	}, button)
+
+	local page = MakePage()
+	page.Name = name
+	Pages[name] = page
+	Tabs[name] = { button = button, label = label, marker = marker }
+
+	button.MouseButton1Click:Connect(function()
+		SelectTab(name)
+	end)
+
+	button.MouseEnter:Connect(function()
+		if Selected ~= name then
+			TweenService:Create(button, TweenInfo.new(0.15), { BackgroundTransparency = 0.94 }):Play()
+			TweenService:Create(label, TweenInfo.new(0.15), { TextColor3 = WHITE }):Play()
+		end
+	end)
+
+	button.MouseLeave:Connect(function()
+		if Selected ~= name then
+			TweenService:Create(button, TweenInfo.new(0.15), { BackgroundTransparency = 1 }):Play()
+			TweenService:Create(label, TweenInfo.new(0.15), { TextColor3 = GREY }):Play()
+		end
+	end)
+
+	if not Selected then
+		SelectTab(name)
+	end
+
+	return page
+end
+
+local CombatPage = AddTab("Combat", 1)
+local KaPage = AddTab("Rage", 2)
+local WeavePage = AddTab("Weave", 3)
+local MiscPage = AddTab("Misc", 4)
+local VisualPage = MiscPage
+local ConfigsPage = AddTab("Configs", 6)
+local OthersPage = MakePage()
+local SettingsPage = AddTab("Settings", 99, SettingsTabButton)
+local FlingPage = MiscPage
+
+local Grip = New("TextButton", {
+	AnchorPoint = Vector2.new(1, 1),
+	Size = UDim2.fromOffset(18, 18),
+	Position = UDim2.new(1, 0, 1, 0),
+	BackgroundTransparency = 1,
+	Text = "",
+	AutoButtonColor = false,
+	ZIndex = 10,
+}, Main)
+
+local CURSOR_ARM = 5
+local CURSOR_GAP = 2
+local CURSOR_THICK = 2
+
+local Cursor = New("Frame", {
+	Name = "Cursor",
+	AnchorPoint = Vector2.new(0, 0),
+	Size = UDim2.fromOffset(0, 0),
+	BackgroundTransparency = 1,
+	BorderSizePixel = 0,
+	Visible = false,
+	ZIndex = 50,
+}, ScreenGui)
+
+local function CursorArm(horizontal, sign)
+	local arm = New("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		BackgroundColor3 = WHITE,
+		BorderSizePixel = 0,
+		ZIndex = 50,
+	}, Cursor)
+
+	if horizontal then
+		arm.Size = UDim2.fromOffset(CURSOR_ARM, CURSOR_THICK)
+		arm.Position = UDim2.fromOffset(sign * (CURSOR_GAP + CURSOR_ARM / 2), 0)
+	else
+		arm.Size = UDim2.fromOffset(CURSOR_THICK, CURSOR_ARM)
+		arm.Position = UDim2.fromOffset(0, sign * (CURSOR_GAP + CURSOR_ARM / 2))
+	end
+end
+
+CursorArm(true, 1)
+CursorArm(true, -1)
+CursorArm(false, 1)
+CursorArm(false, -1)
+
+local dragging, dragStart, startPos
+local resizing, resizeStart, startSize
+local isOpen = false
+local animating = false
+
+Header.InputBegan:Connect(function(input)
+	if IsPress(input) then
+		dragging = true
+		dragStart = input.Position
+		startPos = Main.Position
+	end
+end)
+
+Grip.InputBegan:Connect(function(input)
+	if IsPress(input) then
+		resizing = true
+		resizeStart = input.Position
+		startSize = Main.AbsoluteSize
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if input.UserInputType ~= Enum.UserInputType.MouseMovement
+		and input.UserInputType ~= Enum.UserInputType.Touch then
+		return
+	end
+
+	if dragging then
+		local delta = input.Position - dragStart
+		Main.Position = UDim2.new(
+			startPos.X.Scale, startPos.X.Offset + delta.X,
+			startPos.Y.Scale, startPos.Y.Offset + delta.Y
+		)
+	end
+
+	if resizing then
+		local delta = input.Position - resizeStart
+		Main.Size = UDim2.fromOffset(
+			math.clamp(startSize.X + delta.X, MIN_W, MAX_W),
+			math.clamp(startSize.Y + delta.Y, MIN_H, MAX_H)
+		)
+	end
+
+	if ActiveSlider then
+		ActiveSlider(input.Position.X)
+	end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+	if IsPress(input) then
+		dragging = false
+		resizing = false
+		ActiveSlider = nil
+	end
+end)
+
+local function Open()
+	if isOpen or animating then
+		return
+	end
+
+	isOpen = true
+	Main.Visible = true
+	Glow.Visible = true
+	Cursor.Visible = true
+	UserInputService.MouseIconEnabled = false
+
+	local base = Main.Position
+	Main.Position = base + UDim2.fromOffset(0, 14)
+	Main.GroupTransparency = 1
+
+	TweenService:Create(Main, TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+		Position = base,
+		GroupTransparency = 0,
+	}):Play()
+end
+
+local function Close()
+	if animating or not isOpen then
+		return
+	end
+
+	animating = true
+	isOpen = false
+
+	UserInputService.MouseIconEnabled = true
+	Cursor.Visible = false
+
+	local base = Main.Position
+	local t = TweenService:Create(Main, TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+		Position = base + UDim2.fromOffset(0, 14),
+		GroupTransparency = 1,
+	})
+	t:Play()
+
+	t.Completed:Connect(function()
+		animating = false
+		Main.Position = base
+		Main.Visible = false
+		Glow.Visible = false
+	end)
+end
+
+UserInputService.InputBegan:Connect(function(input, processed)
+	if processed or input.KeyCode ~= Enum.KeyCode.M then
+		return
+	end
+
+	if UserInputService:GetFocusedTextBox() then
+		return
+	end
+
+	if isOpen then
+		Close()
+	else
+		Open()
+	end
+end)
+
+local clock = 0
+local glowConn
+
+glowConn = RunService.RenderStepped:Connect(function(dt)
+	if not ScreenGui.Parent then
+		glowConn:Disconnect()
+		UserInputService.MouseIconEnabled = true
+		return
+	end
+
+	clock += dt
+
+	Glow.Position = Main.Position
+	Glow.Size = Main.Size
+	Glow.Visible = Main.Visible
+
+	local breathe = math.sin(clock * 1.2) * 0.012
+	GlowOuter.Transparency = math.clamp(0.94 + breathe, 0, 1)
+	GlowInner.Transparency = math.clamp(0.88 + breathe, 0, 1)
+
+	if isOpen then
+		local m = UserInputService:GetMouseLocation()
+		Cursor.Position = UDim2.fromOffset(m.X, m.Y)
+	end
+end)
+
+local function CreateToggle(Parent, Text, Default, Callback, Key, Locked)
+	local Initial = Default
+
+	if Key and Config[Key] ~= nil then
+		Initial = Config[Key] == true
+	end
+
+	if Locked then
+		Initial = false
+	end
+
+	local Holder = New("Frame", {
+		Size = UDim2.new(1, -2, 0, 42),
+		BackgroundColor3 = Locked and Color3.fromRGB(22, 22, 22) or ROW_BG,
+		BackgroundTransparency = ROW_TRANSP,
+		BorderSizePixel = 0,
+	}, Parent)
+	Corner(Holder, 9)
+	Stroke(Holder, WHITE, 1, 0.92)
+
+	New("TextLabel", {
+		Size = UDim2.new(1, -65, 1, 0),
+		Position = UDim2.new(0, 11, 0, 0),
+		BackgroundTransparency = 1,
+		Text = Text,
+		TextColor3 = Locked and Color3.fromRGB(95, 95, 95) or WHITE,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 13,
+		TextXAlignment = Enum.TextXAlignment.Left,
+	}, Holder)
+
+	local Switch = New("TextButton", {
+		Size = UDim2.new(0, 40, 0, 22),
+		Position = UDim2.new(1, -52, 0.5, -11),
+		BackgroundColor3 = OFF,
+		Text = "",
+		AutoButtonColor = false,
+		BorderSizePixel = 0,
+	}, Holder)
+	Corner(Switch, UDim.new(1, 0))
+
+	local Knob = New("Frame", {
+		Size = UDim2.new(0, 16, 0, 16),
+		BackgroundColor3 = WHITE,
+		BorderSizePixel = 0,
+	}, Switch)
+	Corner(Knob, UDim.new(1, 0))
+
+	local Enabled = Initial
+	local LastShown = nil
+
+	local function Refresh()
+		if Locked then
+			Switch.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+			Knob.BackgroundColor3 = Color3.fromRGB(70, 70, 70)
+		else
+			Switch.BackgroundColor3 = Enabled and S.A1 or OFF
+			Knob.BackgroundColor3 = Enabled and BLACK or WHITE
+		end
+
+		local Pos = Enabled and UDim2.new(1, -19, 0.5, -8) or UDim2.new(0, 3, 0.5, -8)
+
+		if LastShown == nil then
+			Knob.Position = Pos
+		elseif LastShown ~= Enabled then
+			TweenService:Create(Knob, TweenInfo.new(0.15), { Position = Pos }):Play()
+		end
+
+		LastShown = Enabled
+	end
+
+	Switch.MouseButton1Click:Connect(function()
+		if Locked then
+			return
+		end
+
+		Enabled = not Enabled
+		Refresh()
+
+		if Key then
+			Config[Key] = Enabled
+			SaveConfig()
+		end
+
+		if Callback then
+			Callback(Enabled)
+		end
+	end)
+
+	table.insert(Refreshers, Refresh)
+	Refresh()
+
+	if Key and not Locked then
+		FeatureControls[Key] = {
+			Get = function()
+				return Enabled
+			end,
+			Set = function(Value)
+				Value = Value == true
+
+				if Value == Enabled then
+					return
+				end
+
+				Enabled = Value
+				Refresh()
+				Config[Key] = Enabled
+				SaveConfig()
+
+				if Callback then
+					Callback(Enabled)
+				end
+			end,
+		}
+	end
+
+	if Initial ~= Default and Callback then
+		task.defer(Callback, Initial)
+	end
+
+	return Holder
+end
+
+local function MakeSlider(Parent, Text, Min, Max, Step, Get, Set, Boxed)
+	local Pad = Boxed and 9 or 0
+	local Top = Boxed and 6 or 0
+
+	local Row = New("Frame", {
+		Size = UDim2.new(1, Boxed and -2 or 0, 0, Boxed and 50 or 38),
+		BackgroundColor3 = ROW_BG,
+		BackgroundTransparency = Boxed and ROW_TRANSP or 1,
+		BorderSizePixel = 0,
+	}, Parent)
+
+	if Boxed then
+		Corner(Row, 8)
+	end
+
+	New("TextLabel", {
+		Size = UDim2.new(1, -(Pad * 2 + 54), 0, 16),
+		Position = UDim2.new(0, Pad, 0, Top),
+		BackgroundTransparency = 1,
+		Text = Text,
+		TextColor3 = Boxed and WHITE or DIM,
+		Font = Enum.Font.GothamMedium,
+		TextSize = Boxed and 12 or 11,
+		TextXAlignment = Enum.TextXAlignment.Left,
+	}, Row)
+
+	local Val = New("TextLabel", {
+		Size = UDim2.new(0, 54, 0, 16),
+		Position = UDim2.new(1, -(Pad + 54), 0, Top),
+		BackgroundTransparency = 1,
+		Text = "",
+		TextColor3 = WHITE,
+		Font = Enum.Font.GothamBold,
+		TextSize = 11,
+		TextXAlignment = Enum.TextXAlignment.Right,
+	}, Row)
+
+	local Track = New("Frame", {
+		Size = UDim2.new(1, -(Pad * 2), 0, 6),
+		Position = UDim2.new(0, Pad, 0, Top + 24),
+		BackgroundColor3 = CONTROL,
+		BorderSizePixel = 0,
+	}, Row)
+	Corner(Track, UDim.new(1, 0))
+
+	local Fill = New("Frame", {
+		Size = UDim2.new(0, 0, 1, 0),
+		BackgroundColor3 = WHITE,
+		BorderSizePixel = 0,
+	}, Track)
+	Corner(Fill, UDim.new(1, 0))
+
+	local Knob = New("Frame", {
+		Size = UDim2.new(0, 12, 0, 12),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.new(0, 0, 0.5, 0),
+		BackgroundColor3 = WHITE,
+		BorderSizePixel = 0,
+	}, Track)
+	Corner(Knob, UDim.new(1, 0))
+
+	local Hit = New("TextButton", {
+		Size = UDim2.new(1, -(Pad * 2), 0, 24),
+		Position = UDim2.new(0, Pad, 0, Top + 15),
+		BackgroundTransparency = 1,
+		Text = "",
+		ZIndex = 2,
+	}, Row)
+
+	local Decimals = 0
+	if Step < 1 then Decimals = 1 end
+	if Step < 0.1 then Decimals = 2 end
+
+	local function Show(v)
+		if math.abs(v) < 1e-9 then
+			v = 0
+		end
+
+		local f = math.clamp((v - Min) / (Max - Min), 0, 1)
+		Fill.Size = UDim2.new(f, 0, 1, 0)
+		Knob.Position = UDim2.new(f, 0, 0.5, 0)
+		Val.Text = string.format("%." .. Decimals .. "f", v)
+	end
+
+	Hit.InputBegan:Connect(function(Input)
+		if IsPress(Input) then
+			ActiveSlider = function(x)
+				local rel = math.clamp((x - Track.AbsolutePosition.X) / math.max(Track.AbsoluteSize.X, 1), 0, 1)
+				local v = Min + (Max - Min) * rel
+				local Steps = math.floor((v - Min) / Step + 0.5)
+				v = math.clamp(Min + Steps * Step, Min, Max)
+				v = math.floor(v * 1000 + 0.5) / 1000
+
+				Set(v)
+				Show(v)
+			end
+
+			ActiveSlider(Input.Position.X)
+		end
+	end)
+
+	table.insert(Refreshers, function()
+		Show(Get())
+	end)
+
+	Show(Get())
+
+	return Row, Show
+end
+
+local function CreateSlider(Parent, Text, Min, Max, Step, Default, Callback, Key)
+	if Key and type(Config[Key]) == "number" then
+		Default = math.clamp(Config[Key], Min, Max)
+	end
+
+	local Value = Default
+
+	local Row, Show = MakeSlider(Parent, Text, Min, Max, Step, function()
+		return Value
+	end, function(v)
+		Value = v
+
+		if Key then
+			Config[Key] = v
+			SaveConfig()
+		end
+
+		if Callback then
+			Callback(v)
+		end
+	end, true)
+
+	if Callback then
+		Callback(Value)
+	end
+
+	if Key then
+		FeatureControls[Key] = {
+			Get = function()
+				return Value
+			end,
+			Set = function(v)
+				v = math.clamp(v, Min, Max)
+				local Steps = math.floor((v - Min) / Step + 0.5)
+				v = math.clamp(Min + Steps * Step, Min, Max)
+				v = math.floor(v * 1000 + 0.5) / 1000
+
+				Value = v
+				Config[Key] = v
+				SaveConfig()
+
+				if Callback then
+					Callback(v)
+				end
+
+				Show(v)
+			end,
+		}
+	end
+
+	return Row
+end
+
+local function CreateGap(Parent, Height, Order)
+	return New("Frame", {
+		Size = UDim2.new(1, 0, 0, Height or 6),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		LayoutOrder = Order,
+	}, Parent)
+end
+
+local Modules = {}
+
+local function LoadModules()
+	if Modules.Weave and Modules.AttackState and Modules.Combat then
+		return true
+	end
+
+	local Ok, Err = pcall(function()
+		local Client = ReplicatedStorage:WaitForChild("Client", 10)
+		local SharedFolder = ReplicatedStorage:WaitForChild("Shared", 10)
+
+		Modules.Weave = require(Client.Combat.Weave)
+		Modules.AttackState = require(Client.Combat.AttackState)
+		Modules.Remotes = require(SharedFolder.Net.Remotes)
+		Modules.Movers = require(SharedFolder.Util.Movers)
+		Modules.Combat = Modules.Remotes.Client("CombatService")
+	end)
+
+
+	if not Modules.Input then
+		pcall(function()
+			local Client = ReplicatedStorage:WaitForChild("Client", 10)
+			Modules.Input = require(Client.Controllers.InputController)
+		end)
+	end
+
+	return Modules.Weave ~= nil and Modules.AttackState ~= nil and Modules.Combat ~= nil
+end
+
+task.spawn(LoadModules)
+
+local function HasFight()
+	local Character = LocalPlayer.Character
+	return Character ~= nil and Character:FindFirstChild("Fight") ~= nil
+end
+
+local function IsAlive()
+	local Character = LocalPlayer.Character
+	local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
+	return Humanoid ~= nil and Humanoid.Health > 0
+end
+
+local Anim = { Items = {} }
+local AnimClock = 0
+
+local function CycleColor(Colors, X)
+	local N = #Colors
+	local P = (X % 1) * N
+	local I = math.floor(P)
+	return Colors[I % N + 1]:Lerp(Colors[(I + 1) % N + 1], P - I)
+end
+
+function Anim.Add(Gradient, Colors, Speed)
+	table.insert(Anim.Items, { G = Gradient, C = Colors, S = Speed or 0.25 })
+end
+
+Conn(RunService.Heartbeat:Connect(function(dt)
+	AnimClock = AnimClock + dt
+
+	for I = #Anim.Items, 1, -1 do
+		local It = Anim.Items[I]
+
+		if not It.G.Parent then
+			table.remove(Anim.Items, I)
+		else
+			local Points = {}
+			local Phase = AnimClock * It.S
+
+			for K = 0, 8 do
+				Points[#Points + 1] = ColorSequenceKeypoint.new(K / 8, CycleColor(It.C, K / 8 + Phase))
+			end
+
+			It.G.Color = ColorSequence.new(Points)
+		end
+	end
+end))
+
+RunSection(function()
+	local DATABASE_URL = "https://lala-3de7c-default-rtdb.firebaseio.com"
+	local PING_EVERY = 6
+	local LIST_EVERY = 2
+	local TAG_SYNC_EVERY = 8
+	local STALE_MS = 18000
+	local PURGE_MS = 600000
+	local TAG_NAME = "IsaevNameTag"
+	local TAG_FILE = "IsaevTags.json"
+	local TAG_DB = "/isaevTags"
+	local BADGE_FONT = Enum.Font.Bangers
+	local BADGE_COLORS = {
+		Color3.fromRGB(255, 255, 255),
+		Color3.fromRGB(255, 176, 214),
+		Color3.fromRGB(160, 205, 255),
+		Color3.fromRGB(255, 176, 214),
+	}
+
+	local FONT_CYCLE = { "GothamBlack", "GothamBold", "Bangers", "Arcade", "SciFi", "Code", "Fantasy", "Gotham" }
+	local PALETTE = {
+		{ 245, 245, 245 }, { 20, 20, 20 }, { 255, 196, 40 }, { 235, 35, 35 },
+		{ 255, 120, 190 }, { 190, 130, 255 }, { 120, 220, 255 }, { 190, 245, 255 },
+		{ 230, 230, 235 }, { 140, 140, 150 }, { 120, 220, 140 }, { 255, 140, 50 },
+	}
+	local TARGETS = { { "c1", "Color 1" }, { "c2", "Color 2" }, { "stroke", "Stroke" } }
+
+	local ServerNow = nil
+	local ServerNowAt = 0
+	local Base = string.gsub(DATABASE_URL, "/+$", "")
+	local Http = request or http_request or (syn and syn.request) or (http and http.request)
+	local HideTags = false
+	local Injected = {}
+	local LastSeen = {}
+	local LastSig = nil
+	local Users = {}
+	local Badges = {}
+	local Rows = {}
+	local Status, CountLabel
+	local TagState = {}
+	local SelectOn = false
+	local SelectedUid = nil
+	local Draft = nil
+	local Target = "c1"
+	local PreviewGrad = nil
+
+	local DefaultTags = {}
+
+	local function Def(ids, text, c1, c2, stroke, icon)
+		for _, id in ipairs(ids) do
+			DefaultTags[id] = {
+				text = text,
+				c1 = c1,
+				c2 = c2,
+				stroke = stroke,
+				font = "GothamBlack",
+				mode = "injected",
+				icon = icon == true,
+			}
+		end
+	end
+
+	local GOLD = { 255, 196, 40 }
+	local BLK = { 20, 20, 20 }
+	local PURE_BLACK = { 0, 0, 0 }
+	local WHT = { 245, 245, 245 }
+	local SILVER = { 230, 230, 235 }
+	local SILVER_DARK = { 120, 120, 130 }
+	local PURPLE = { 190, 130, 255 }
+	local RED = { 235, 35, 35 }
+	local DARK_RED = { 60, 0, 0 }
+	local PINK = { 255, 120, 190 }
+	local GREY_TAG = { 140, 140, 150 }
+	local BRIGHT = { 255, 255, 255 }
+
+
+
+	local LocalTags = {}
+	local RemoteTags = {}
+
+	pcall(function()
+		if type(isfile) == "function" and type(readfile) == "function" and isfile(TAG_FILE) then
+			local Decoded = HttpService:JSONDecode(readfile(TAG_FILE))
+
+			if type(Decoded) == "table" then
+				LocalTags = Decoded
+			end
+		end
+	end)
+
+	local function SaveLocal()
+		pcall(function()
+			if type(writefile) == "function" then
+				writefile(TAG_FILE, HttpService:JSONEncode(LocalTags))
+			end
+		end)
+	end
+
+	local function Clr(c)
+		return { c[1], c[2], c[3] }
+	end
+
+	local function BaseRec()
+		return {
+			text = "Tag",
+			c1 = Clr(WHT),
+			c2 = Clr(GREY_TAG),
+			stroke = Clr(PURE_BLACK),
+			font = "GothamBlack",
+			mode = "injected",
+			icon = false,
+		}
+	end
+
+	local function ValidRec(r)
+		return type(r) == "table"
+			and type(r.text) == "string"
+			and type(r.c1) == "table"
+			and type(r.c2) == "table"
+			and type(r.stroke) == "table"
+	end
+
+	local function CopyRec(r)
+		return {
+			text = r.text,
+			c1 = Clr(r.c1),
+			c2 = Clr(r.c2),
+			stroke = Clr(r.stroke),
+			font = type(r.font) == "string" and r.font or "GothamBlack",
+			mode = r.mode == "always" and "always" or "injected",
+			icon = r.icon == true,
+		}
+	end
+
+	local function TagFor(uid)
+		local key = tostring(uid)
+		local r = RemoteTags[key]
+
+		if ValidRec(r) then
+			return r
+		end
+
+		r = LocalTags[key]
+
+		if ValidRec(r) then
+			return r
+		end
+
+		return DefaultTags[uid]
+	end
+
+	local function ToC3(t)
+		return Color3.fromRGB(tonumber(t[1]) or 255, tonumber(t[2]) or 255, tonumber(t[3]) or 255)
+	end
+
+	local function FontOf(name)
+		local ok, f = pcall(function()
+			return Enum.Font[name]
+		end)
+
+		return ok and f or Enum.Font.GothamBlack
+	end
+
+	local function GradientOf(r)
+		return { ToC3(r.c1), ToC3(r.c2), ToC3(r.c1), ToC3(r.c2) }
+	end
+
+	local function SigOf(r)
+		return table.concat({
+			r.text, r.font, r.mode,
+			r.c1[1], r.c1[2], r.c1[3],
+			r.c2[1], r.c2[2], r.c2[3],
+			r.stroke[1], r.stroke[2], r.stroke[3],
+			tostring(r.icon),
+		}, "|")
+	end
+
+	local function Call(Method, Path, Body)
+		if Base == "" or not Http then
+			return nil
+		end
+
+		local Ok, Res = pcall(Http, {
+			Url = Base .. Path .. ".json",
+			Method = Method,
+			Headers = { ["Content-Type"] = "application/json" },
+			Body = Body and HttpService:JSONEncode(Body) or nil,
+		})
+
+		if Ok and type(Res) == "table" and type(Res.StatusCode) == "number"
+			and Res.StatusCode >= 200 and Res.StatusCode < 300 then
+			return Res.Body or ""
+		end
+
+		return nil
+	end
+
+	local function NowMs()
+		if ServerNow then
+			return ServerNow + (os.clock() - ServerNowAt) * 1000
+		end
+
+		return os.time() * 1000
+	end
+
+	local StatusToken = 0
+
+	local function SetStatus(Text, Good)
+		StatusToken = StatusToken + 1
+
+		local Mine = StatusToken
+
+		if Status then
+			Status.Text = Text
+			Status.TextColor3 = Good and GOOD or BAD
+		end
+
+		if Text ~= "" and Good then
+			task.delay(4, function()
+				if Mine == StatusToken and Status and Status.Parent then
+					Status.Text = ""
+				end
+			end)
+		end
+	end
+
+	local function Ping()
+		local Body = Call("PUT", "/wmsUsers/" .. LocalPlayer.UserId, {
+			n = LocalPlayer.Name,
+			d = LocalPlayer.DisplayName,
+			p = game.PlaceId,
+			j = game.JobId,
+			t = { [".sv"] = "timestamp" },
+		})
+
+		if Body then
+			local Ok, Data = pcall(function()
+				return HttpService:JSONDecode(Body)
+			end)
+
+			if Ok and type(Data) == "table" and type(Data.t) == "number" then
+				ServerNow = Data.t
+				ServerNowAt = os.clock()
+			end
+		end
+	end
+
+	local function Fetch()
+		local Body = Call("GET", "/wmsUsers")
+
+		if not Body then
+			return false
+		end
+
+		local Ok, Data = pcall(function()
+			return HttpService:JSONDecode(Body)
+		end)
+
+		if not Ok then
+			return false
+		end
+
+		local Now = NowMs()
+		local List = {}
+		local Present = {}
+
+		if type(Data) == "table" then
+			for Id, E in pairs(Data) do
+				local Uid = tonumber(Id)
+
+				if Uid and type(E) == "table" then
+					local T = tonumber(E.t)
+
+					if T and T > 1e11 and T <= Now + 60000 and Now - T <= STALE_MS then
+						Present[Uid] = true
+
+						if Uid ~= LocalPlayer.UserId and not OWNER_IDS[Uid] then
+							table.insert(List, {
+								id = Uid,
+								n = tostring(E.n),
+								d = tostring(E.d or E.n),
+								p = tonumber(E.p) or game.PlaceId,
+								j = tostring(E.j),
+							})
+						end
+					elseif ServerNow and (not T or T < 1e11 or Now - T > PURGE_MS) then
+						task.spawn(Call, "DELETE", "/wmsUsers/" .. Id)
+					end
+				end
+			end
+		end
+
+		table.sort(List, function(a, b)
+			local RankA = AUTH_RANK[a.id] or 99
+			local RankB = AUTH_RANK[b.id] or 99
+
+			if RankA ~= RankB then
+				return RankA < RankB
+			end
+
+			return string.lower(a.d) < string.lower(b.d)
+		end)
+
+		Users = List
+		Injected = Present
+
+		local Clock = os.clock()
+
+		for _, U in ipairs(List) do
+			LastSeen[U.id] = Clock
+		end
+
+		for Uid in pairs(Present) do
+			LastSeen[Uid] = Clock
+		end
+
+		return true
+	end
+
+	local function RestoreTag(Pl)
+		local Data = TagState[Pl]
+
+		if not Data then
+			return
+		end
+
+		TagState[Pl] = nil
+
+		pcall(function()
+			if Data.Gui then
+				Data.Gui:Destroy()
+			end
+		end)
+
+		pcall(function()
+			if Data.Humanoid and Data.Humanoid.Parent and Data.OldDisplay then
+				Data.Humanoid.DisplayDistanceType = Data.OldDisplay
+			end
+		end)
+
+		for Gui, Old in pairs(Data.Hidden) do
+			pcall(function()
+				if Gui.Parent then
+					Gui.Enabled = Old
+				end
+			end)
+		end
+	end
+
+	local function TagWanted(Pl, Rec)
+		if HideTags then
+			return false
+		end
+
+		return Pl ~= LocalPlayer and Injected[Pl.UserId] ~= true
+	end
+
+	local function BuildTag(Head, Rec)
+		local Gui = Instance.new("BillboardGui")
+		Gui.Name = TAG_NAME
+		Gui.Adornee = Head
+		Gui.AlwaysOnTop = true
+		Gui.Size = UDim2.fromOffset(180, 34)
+		Gui.StudsOffsetWorldSpace = Vector3.new(0, 2.4, 0)
+		Gui.MaxDistance = 400
+		Gui.LightInfluence = 0
+		Gui.ResetOnSpawn = false
+
+		local Label = Instance.new("TextLabel")
+		Label.Size = UDim2.fromScale(1, 1)
+		Label.BackgroundTransparency = 1
+		Label.Text = Rec.text
+		Label.TextColor3 = Color3.new(1, 1, 1)
+		Label.Font = FontOf(Rec.font)
+		Label.TextSize = 20
+		Label.TextXAlignment = Enum.TextXAlignment.Center
+		Label.Parent = Gui
+
+		local Stroke = Instance.new("UIStroke")
+		Stroke.Color = ToC3(Rec.stroke)
+		Stroke.Thickness = 1
+		Stroke.Transparency = 0
+		Stroke.Parent = Label
+
+		local Gradient = Instance.new("UIGradient")
+		Gradient.Parent = Label
+		Anim.Add(Gradient, GradientOf(Rec), 0.22)
+
+		if Rec.icon then
+			local Icon = Instance.new("ImageLabel")
+			Icon.Size = UDim2.fromOffset(20, 20)
+			Icon.AnchorPoint = Vector2.new(1, 0.5)
+			Icon.BackgroundTransparency = 1
+			Icon.Image = "rbxassetid://112168561506610"
+			Icon.Parent = Gui
+
+			local function PlaceIcon()
+				Icon.Position = UDim2.new(0.5, -Label.TextBounds.X / 2 - 4, 0.5, 0)
+			end
+
+			Label:GetPropertyChangedSignal("TextBounds"):Connect(PlaceIcon)
+			PlaceIcon()
+		end
+
+		Gui.Parent = Head
+
+		return Gui
+	end
+
+	local function ReconcileTags()
+		for _, Pl in ipairs(Players:GetPlayers()) do
+			local Data = TagState[Pl]
+			local Character = Pl.Character
+			local Head = Character and Character:FindFirstChild("Head")
+			local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
+			local Rec = TagFor(Pl.UserId)
+
+			if Rec and TagWanted(Pl, Rec) and Head and Humanoid and Humanoid.Health > 0 then
+				local Sig = SigOf(Rec)
+
+				if not Data or Data.Head ~= Head or Data.Sig ~= Sig then
+					RestoreTag(Pl)
+
+					Data = {
+						Gui = BuildTag(Head, Rec),
+						Head = Head,
+						Humanoid = Humanoid,
+						OldDisplay = Humanoid.DisplayDistanceType,
+						Hidden = {},
+						Sig = Sig,
+					}
+					TagState[Pl] = Data
+				end
+
+				if Humanoid.DisplayDistanceType ~= Enum.HumanoidDisplayDistanceType.None then
+					Humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+				end
+
+				for _, Inst in ipairs(Character:GetDescendants()) do
+					if Inst:IsA("BillboardGui") and Inst.Name ~= TAG_NAME and Inst.Name ~= "IsaevUserBadge" then
+						if Data.Hidden[Inst] == nil then
+							Data.Hidden[Inst] = Inst.Enabled
+						end
+
+						if Inst.Enabled then
+							Inst.Enabled = false
+						end
+					end
+				end
+			elseif Data then
+				RestoreTag(Pl)
+			end
+		end
+	end
+
+	local function Reconcile()
+		local Want = {}
+		local Now = os.clock()
+
+		if not TagFor(LocalPlayer.UserId) then
+			Want[LocalPlayer] = true
+		end
+
+		for _, U in ipairs(Users) do
+			if U.j == game.JobId and not TagFor(U.id) then
+				local Pl = Players:GetPlayerByUserId(U.id)
+
+				if Pl then
+					Want[Pl] = true
+				end
+			end
+		end
+
+		for Pl in pairs(Badges) do
+			local SeenAt = LastSeen[Pl.UserId]
+
+			if Pl ~= LocalPlayer and SeenAt and Now - SeenAt < 10 and not TagFor(Pl.UserId) then
+				Want[Pl] = true
+			end
+		end
+
+		for Pl, Gui in pairs(Badges) do
+			if not Want[Pl] or not Pl.Parent then
+				Gui:Destroy()
+				Badges[Pl] = nil
+			end
+		end
+
+		if HideTags then
+			return
+		end
+
+	end
+
+	local function SyncTags()
+		local Body = Call("GET", TAG_DB)
+
+		if not Body then
+			return false
+		end
+
+		local Ok, Data = pcall(function()
+			return HttpService:JSONDecode(Body)
+		end)
+
+		if not Ok then
+			return false
+		end
+
+		RemoteTags = type(Data) == "table" and Data or {}
+
+		for key, rec in pairs(LocalTags) do
+			if ValidRec(rec) and RemoteTags[key] == nil then
+				RemoteTags[key] = rec
+				task.spawn(Call, "PUT", TAG_DB .. "/" .. key, rec)
+			end
+		end
+
+		ReconcileTags()
+
+		return true
+	end
+
+	local function PlayerUnderMouse()
+		local Camera = workspace.CurrentCamera
+
+		if not Camera then
+			return nil
+		end
+
+		local M = UserInputService:GetMouseLocation()
+		local Ray = Camera:ViewportPointToRay(M.X, M.Y)
+		local Params = RaycastParams.new()
+		Params.FilterType = Enum.RaycastFilterType.Exclude
+		Params.FilterDescendantsInstances = { LocalPlayer.Character }
+
+		local Hit = workspace:Raycast(Ray.Origin, Ray.Direction * 1000, Params)
+
+		if not Hit then
+			return nil
+		end
+
+		local Node = Hit.Instance
+
+		while Node and Node ~= workspace do
+			local Pl = Players:GetPlayerFromCharacter(Node)
+
+			if Pl then
+				return Pl
+			end
+
+			Node = Node.Parent
+		end
+
+		return nil
+	end
+
+	local function Label(Text, Size, Order)
+		return New("TextLabel", {
+			Size = Size,
+			BackgroundTransparency = 1,
+			Text = Text,
+			TextColor3 = WHITE,
+			Font = Enum.Font.GothamBlack,
+			TextSize = 15,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextWrapped = true,
+			LayoutOrder = Order,
+		}, OthersPage)
+	end
+
+	local HideToggle = CreateToggle(SettingsPage, "Hide Script Tags", false, function(State)
+		HideTags = State
+
+		for _, Gui in pairs(Badges) do
+			Gui.Enabled = not State
+		end
+
+		ReconcileTags()
+	end)
+	HideToggle.LayoutOrder = 8
+
+	local IsaveilLabel = New("TextLabel", {
+		Size = UDim2.new(1, -2, 0, 36),
+		BackgroundTransparency = 1,
+		Text = "/wms",
+		TextColor3 = WHITE,
+		Font = Enum.Font.GothamBlack,
+		TextSize = 26,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		LayoutOrder = 13,
+	}, SettingsPage)
+
+	New("UIStroke", { Color = WHITE, Thickness = 1, Transparency = 0.3 }, IsaveilLabel)
+
+	local IsaveilGradient = Instance.new("UIGradient")
+	IsaveilGradient.Parent = IsaveilLabel
+	Anim.Add(IsaveilGradient, {
+		Color3.fromRGB(255, 255, 255),
+		Color3.fromRGB(0, 0, 0),
+		Color3.fromRGB(255, 255, 255),
+		Color3.fromRGB(0, 0, 0),
+	}, 0.25)
+
+	Label("Others", UDim2.new(1, 0, 0, 22), 0)
+
+	local SelectToggle = CreateToggle(OthersPage, "Select Player", false, function(State)
+		SelectOn = State
+	end)
+	SelectToggle.LayoutOrder = 1
+
+	local EditorFrame = New("Frame", {
+		Name = "TagEditor",
+		Size = UDim2.new(1, -2, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundColor3 = ROW_BG,
+		BackgroundTransparency = ROW_TRANSP,
+		BorderSizePixel = 0,
+		LayoutOrder = 2,
+	}, OthersPage)
+	Corner(EditorFrame, 9)
+	Stroke(EditorFrame, WHITE, 1, 0.92)
+	New("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, EditorFrame)
+	New("UIPadding", {
+		PaddingTop = UDim.new(0, 10),
+		PaddingBottom = UDim.new(0, 10),
+		PaddingLeft = UDim.new(0, 10),
+		PaddingRight = UDim.new(0, 10),
+	}, EditorFrame)
+
+	local EmptyLabel = New("TextLabel", {
+		Size = UDim2.new(1, 0, 0, 34),
+		BackgroundTransparency = 1,
+		Text = "turn on Select Player, then click an injected player in the game",
+		TextColor3 = DIM,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 11,
+		TextWrapped = true,
+		LayoutOrder = 1,
+	}, EditorFrame)
+
+	local EditBody = New("Frame", {
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundTransparency = 1,
+		Visible = false,
+		LayoutOrder = 1,
+	}, EditorFrame)
+	New("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, EditBody)
+
+	local HeadRow = New("Frame", {
+		Size = UDim2.new(1, 0, 0, 38),
+		BackgroundTransparency = 1,
+		LayoutOrder = 1,
+	}, EditBody)
+
+	local AvatarImg = New("ImageLabel", {
+		Size = UDim2.fromOffset(36, 36),
+		Position = UDim2.new(0, 0, 0.5, -18),
+		BackgroundColor3 = PANEL,
+		BorderSizePixel = 0,
+	}, HeadRow)
+	Corner(AvatarImg, 18)
+
+	local NameLabel = New("TextLabel", {
+		Size = UDim2.new(1, -74, 0, 18),
+		Position = UDim2.new(0, 44, 0, 2),
+		BackgroundTransparency = 1,
+		Text = "",
+		TextColor3 = WHITE,
+		Font = Enum.Font.GothamBold,
+		TextSize = 12,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+	}, HeadRow)
+
+	local SubLabel = New("TextLabel", {
+		Size = UDim2.new(1, -74, 0, 14),
+		Position = UDim2.new(0, 44, 0, 20),
+		BackgroundTransparency = 1,
+		Text = "",
+		TextColor3 = DIM,
+		Font = Enum.Font.Gotham,
+		TextSize = 10,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+	}, HeadRow)
+
+	local CloseProfile = New("TextButton", {
+		AnchorPoint = Vector2.new(1, 0),
+		Size = UDim2.fromOffset(22, 22),
+		Position = UDim2.new(1, 0, 0, 0),
+		BackgroundColor3 = CONTROL,
+		BackgroundTransparency = 0.3,
+		Text = "×",
+		TextColor3 = GREY,
+		Font = Enum.Font.GothamBold,
+		TextSize = 14,
+		AutoButtonColor = false,
+		BorderSizePixel = 0,
+	}, HeadRow)
+	Corner(CloseProfile, 7)
+
+	local TagBox = New("TextBox", {
+		Size = UDim2.new(1, 0, 0, 26),
+		BackgroundColor3 = CONTROL,
+		BackgroundTransparency = 0.3,
+		BorderSizePixel = 0,
+		Text = "",
+		PlaceholderText = "tag text",
+		PlaceholderColor3 = GREY,
+		TextColor3 = WHITE,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 12,
+		ClearTextOnFocus = false,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		LayoutOrder = 2,
+	}, EditBody)
+	Corner(TagBox, 8)
+	New("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }, TagBox)
+
+	local PreviewHolder = New("Frame", {
+		Size = UDim2.new(1, 0, 0, 40),
+		BackgroundColor3 = PANEL,
+		BackgroundTransparency = 0.2,
+		BorderSizePixel = 0,
+		LayoutOrder = 3,
+	}, EditBody)
+	Corner(PreviewHolder, 8)
+
+	local PreviewLabel = New("TextLabel", {
+		Size = UDim2.new(1, 0, 1, 0),
+		BackgroundTransparency = 1,
+		Text = "",
+		TextColor3 = WHITE,
+		Font = Enum.Font.GothamBlack,
+		TextSize = 20,
+		TextXAlignment = Enum.TextXAlignment.Center,
+	}, PreviewHolder)
+
+	local PreviewStroke = Stroke(PreviewLabel, BLACK, 1, 0)
+
+	local function PreviewRefresh()
+		PreviewLabel.Text = Draft.text
+		PreviewLabel.Font = FontOf(Draft.font)
+		PreviewStroke.Color = ToC3(Draft.stroke)
+
+		if PreviewGrad then
+			PreviewGrad:Destroy()
+		end
+
+		PreviewGrad = New("UIGradient", {}, PreviewLabel)
+		Anim.Add(PreviewGrad, GradientOf(Draft), 0.22)
+	end
+
+	local TargetRow = New("Frame", {
+		Size = UDim2.new(1, 0, 0, 24),
+		BackgroundTransparency = 1,
+		LayoutOrder = 4,
+	}, EditBody)
+
+	local TargetButtons = {}
+
+	for i, t in ipairs(TARGETS) do
+		local B = New("TextButton", {
+			Size = UDim2.new(1 / 3, -4, 1, 0),
+			Position = UDim2.new((i - 1) / 3, 2, 0, 0),
+			BackgroundColor3 = CONTROL,
+			BackgroundTransparency = 0.6,
+			Text = t[2],
+			TextColor3 = DIM,
+			Font = Enum.Font.GothamMedium,
+			TextSize = 11,
+			AutoButtonColor = false,
+			BorderSizePixel = 0,
+		}, TargetRow)
+		Corner(B, 7)
+
+		B.MouseButton1Click:Connect(function()
+			Target = t[1]
+			RefreshEditor()
+		end)
+
+		TargetButtons[t[1]] = B
+	end
+
+	local PaletteFrame = New("Frame", {
+		Size = UDim2.new(1, 0, 0, 46),
+		BackgroundTransparency = 1,
+		LayoutOrder = 5,
+	}, EditBody)
+
+	New("UIGridLayout", {
+		CellSize = UDim2.fromOffset(46, 20),
+		CellPadding = UDim2.fromOffset(4, 4),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	}, PaletteFrame)
+
+	for i, c in ipairs(PALETTE) do
+		local B = New("TextButton", {
+			BackgroundColor3 = Color3.fromRGB(c[1], c[2], c[3]),
+			Text = "",
+			AutoButtonColor = false,
+			BorderSizePixel = 0,
+			LayoutOrder = i,
+		}, PaletteFrame)
+		Corner(B, 6)
+
+		B.MouseButton1Click:Connect(function()
+			if not Draft then
+				return
+			end
+
+			Draft[Target] = { c[1], c[2], c[3] }
+			RefreshEditor()
+		end)
+	end
+
+	local OptRow = New("Frame", {
+		Size = UDim2.new(1, 0, 0, 26),
+		BackgroundTransparency = 1,
+		LayoutOrder = 6,
+	}, EditBody)
+
+	local FontBtn = New("TextButton", {
+		Size = UDim2.new(0.5, -3, 1, 0),
+		BackgroundColor3 = CONTROL,
+		BackgroundTransparency = 0.3,
+		Text = "",
+		TextColor3 = WHITE,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 11,
+		AutoButtonColor = false,
+		BorderSizePixel = 0,
+	}, OptRow)
+	Corner(FontBtn, 7)
+
+	local ModeBtn = New("TextButton", {
+		Size = UDim2.new(0.5, -3, 1, 0),
+		Position = UDim2.new(0.5, 3, 0, 0),
+		BackgroundColor3 = CONTROL,
+		BackgroundTransparency = 0.3,
+		Text = "",
+		TextColor3 = WHITE,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 11,
+		AutoButtonColor = false,
+		BorderSizePixel = 0,
+	}, OptRow)
+	Corner(ModeBtn, 7)
+
+	local BtnRow = New("Frame", {
+		Size = UDim2.new(1, 0, 0, 28),
+		BackgroundTransparency = 1,
+		LayoutOrder = 7,
+	}, EditBody)
+
+	local SaveBtn = New("TextButton", {
+		Size = UDim2.new(0.5, -3, 1, 0),
+		BackgroundColor3 = Color3.fromRGB(32, 98, 214),
+		Text = "Save",
+		TextColor3 = WHITE,
+		Font = Enum.Font.GothamBold,
+		TextSize = 12,
+		AutoButtonColor = true,
+		BorderSizePixel = 0,
+	}, BtnRow)
+	Corner(SaveBtn, 7)
+
+	local ResetBtn = New("TextButton", {
+		Size = UDim2.new(0.5, -3, 1, 0),
+		Position = UDim2.new(0.5, 3, 0, 0),
+		BackgroundColor3 = CONTROL,
+		Text = "Reset to default",
+		TextColor3 = WHITE,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 11,
+		AutoButtonColor = false,
+		BorderSizePixel = 0,
+	}, BtnRow)
+	Corner(ResetBtn, 7)
+
+	local EditStatus = New("TextLabel", {
+		Size = UDim2.new(1, 0, 0, 14),
+		BackgroundTransparency = 1,
+		Text = "",
+		TextColor3 = DIM,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 10,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextWrapped = true,
+		LayoutOrder = 8,
+	}, EditBody)
+
+	local function SetEditStatus(text, good)
+		EditStatus.Text = text
+		EditStatus.TextColor3 = good and GOOD or BAD
+	end
+
+	function RefreshEditor()
+		if not Draft or not SelectedUid then
+			EmptyLabel.Visible = true
+			EditBody.Visible = false
+			return
+		end
+
+		EmptyLabel.Visible = false
+		EditBody.Visible = true
+
+		if not TagBox:IsFocused() then
+			TagBox.Text = Draft.text
+		end
+
+		for key, B in pairs(TargetButtons) do
+			local on = key == Target
+			B.BackgroundTransparency = on and 0.05 or 0.6
+			B.BackgroundColor3 = on and WHITE or CONTROL
+			B.TextColor3 = on and BLACK or DIM
+		end
+
+		FontBtn.Text = "Font: " .. Draft.font
+		ModeBtn.Text = Draft.mode == "always" and "Shows: always" or "Shows: injected only"
+		PreviewRefresh()
+	end
+
+	local function BaseDraftFor(uid)
+		local src = TagFor(uid)
+
+		if src then
+			return CopyRec(src)
+		end
+
+		return BaseRec()
+	end
+
+	local function SelectPlayer(Pl)
+		SelectedUid = Pl.UserId
+		Draft = BaseDraftFor(Pl.UserId)
+		Target = "c1"
+
+		pcall(function()
+			AvatarImg.Image = Players:GetUserThumbnailAsync(Pl.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size100x100)
+		end)
+
+		NameLabel.Text = Pl.DisplayName
+		SubLabel.Text = "@" .. Pl.Name .. "  •  " .. Pl.UserId
+		SetEditStatus("", true)
+		SelectTab("Others")
+		RefreshEditor()
+	end
+
+	local function ReadNameBox()
+		if not Draft then
+			return
+		end
+
+		local t = TagBox.Text
+
+		if t == "" then
+			t = "Tag"
+		end
+
+		Draft.text = UTrunc(t, 24)
+	end
+
+	TagBox.FocusLost:Connect(function()
+		ReadNameBox()
+		RefreshEditor()
+	end)
+
+	CloseProfile.MouseButton1Click:Connect(function()
+		SelectedUid = nil
+		Draft = nil
+		NameLabel.Text = ""
+		SubLabel.Text = ""
+		SetEditStatus("", true)
+		RefreshEditor()
+	end)
+
+	FontBtn.MouseButton1Click:Connect(function()
+		if not Draft then
+			return
+		end
+
+		local idx = table.find(FONT_CYCLE, Draft.font) or 0
+		Draft.font = FONT_CYCLE[idx % #FONT_CYCLE + 1]
+		RefreshEditor()
+	end)
+
+	ModeBtn.MouseButton1Click:Connect(function()
+		if not Draft then
+			return
+		end
+
+		Draft.mode = Draft.mode == "always" and "injected" or "always"
+		RefreshEditor()
+	end)
+
+	SaveBtn.MouseButton1Click:Connect(function()
+		if not SelectedUid or not Draft then
+			return
+		end
+
+		ReadNameBox()
+
+		local key = tostring(SelectedUid)
+		local copy = CopyRec(Draft)
+
+		LocalTags[key] = copy
+		RemoteTags[key] = copy
+		SaveLocal()
+		ReconcileTags()
+		RefreshEditor()
+
+		task.spawn(function()
+			local Body = Call("PUT", TAG_DB .. "/" .. key, copy)
+
+			if Body then
+				SetEditStatus("Saved", true)
+			else
+				SetEditStatus("Saved on this client only", false)
+			end
+		end)
+	end)
+
+	ResetBtn.MouseButton1Click:Connect(function()
+		if not SelectedUid then
+			return
+		end
+
+		local key = tostring(SelectedUid)
+
+		LocalTags[key] = nil
+		RemoteTags[key] = nil
+		SaveLocal()
+		task.spawn(Call, "DELETE", TAG_DB .. "/" .. key)
+
+		Draft = DefaultTags[SelectedUid] and CopyRec(DefaultTags[SelectedUid]) or BaseRec()
+		ReconcileTags()
+		SetEditStatus("reset to default", true)
+		RefreshEditor()
+	end)
+
+	Conn(UserInputService.InputBegan:Connect(function(input, processed)
+		if processed or not SelectOn or not IsPress(input) then
+			return
+		end
+
+		local Pl = PlayerUnderMouse()
+
+		if not Pl then
+			return
+		end
+
+		if Pl ~= LocalPlayer and not Injected[Pl.UserId] then
+			SetStatus("that player isn't running the script", false)
+			return
+		end
+
+		SelectPlayer(Pl)
+	end))
+
+	RefreshEditor()
+
+	local Joining = false
+
+	local function JoinUser(U, Button)
+		if Joining then
+			return
+		end
+
+		Joining = true
+		Button.Text = "..."
+
+		local Ok = pcall(function()
+			TeleportService:TeleportToPlaceInstance(U.p, U.j, LocalPlayer)
+		end)
+
+		if not Ok then
+			SetStatus("couldn't join " .. U.d .. " (server full or closed)", false)
+		end
+
+		task.delay(6, function()
+			Joining = false
+
+			if Button.Parent then
+				Button.Text = "Join"
+			end
+		end)
+	end
+
+	local Refresh
+
+	local Reload = New("TextButton", {
+		Size = UDim2.new(1, -2, 0, 30),
+		BackgroundColor3 = CONTROL,
+		Text = "Refresh list",
+		TextColor3 = WHITE,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 12,
+		AutoButtonColor = false,
+		BorderSizePixel = 0,
+		LayoutOrder = 5,
+	}, OthersPage)
+	Corner(Reload, 8)
+
+	Reload.MouseEnter:Connect(function()
+		TweenService:Create(Reload, TweenInfo.new(0.12), { BackgroundColor3 = Color3.fromRGB(44, 46, 74) }):Play()
+	end)
+
+	Reload.MouseLeave:Connect(function()
+		TweenService:Create(Reload, TweenInfo.new(0.12), { BackgroundColor3 = CONTROL }):Play()
+	end)
+
+	Reload.MouseButton1Click:Connect(function()
+		task.spawn(Refresh)
+	end)
+
+	Status = New("TextLabel", {
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundTransparency = 1,
+		Text = "",
+		TextColor3 = DIM,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 11,
+		TextWrapped = true,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		LayoutOrder = 3,
+	}, OthersPage)
+
+	CountLabel = Label("Online users", UDim2.new(1, 0, 0, 20), 4)
+	CountLabel.TextSize = 12
+	CountLabel.Font = Enum.Font.GothamBold
+
+	local function Rebuild()
+		local Parts = {}
+
+		for _, U in ipairs(Users) do
+			Parts[#Parts + 1] = U.id .. (U.j == game.JobId and "h" or "o") .. U.d
+		end
+
+		local Sig = table.concat(Parts, ",")
+
+		if Sig == LastSig then
+			return
+		end
+
+		LastSig = Sig
+
+		for _, R in ipairs(Rows) do
+			R:Destroy()
+		end
+
+		table.clear(Rows)
+
+		CountLabel.Text = "Online users (" .. #Users .. ")"
+
+		if #Users == 0 then
+			local Empty = Label("nobody else is online right now", UDim2.new(1, 0, 0, 24), 20)
+			Empty.Font = Enum.Font.GothamMedium
+			Empty.TextSize = 11
+			Empty.TextColor3 = DIM
+			table.insert(Rows, Empty)
+			return
+		end
+
+		for I, U in ipairs(Users) do
+			local Here = U.j == game.JobId
+
+			local Row = New("Frame", {
+				Size = UDim2.new(1, -2, 0, 44),
+				BackgroundColor3 = ROW_BG,
+				BackgroundTransparency = ROW_TRANSP,
+				BorderSizePixel = 0,
+				LayoutOrder = 20 + I,
+			}, OthersPage)
+			Corner(Row, 8)
+
+			New("TextLabel", {
+				Size = UDim2.new(1, -92, 0, 18),
+				Position = UDim2.new(0, 11, 0, 6),
+				BackgroundTransparency = 1,
+				Text = U.d .. "  @" .. U.n,
+				TextColor3 = WHITE,
+				Font = Enum.Font.GothamBold,
+				TextSize = 12,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				TextTruncate = Enum.TextTruncate.AtEnd,
+			}, Row)
+
+			New("TextLabel", {
+				Size = UDim2.new(1, -92, 0, 14),
+				Position = UDim2.new(0, 11, 0, 24),
+				BackgroundTransparency = 1,
+				Text = Here and "in your server" or "in another server",
+				TextColor3 = Here and GOOD or DIM,
+				Font = Enum.Font.Gotham,
+				TextSize = 10,
+				TextXAlignment = Enum.TextXAlignment.Left,
+			}, Row)
+
+			local Button = New("TextButton", {
+				Size = UDim2.new(0, 64, 0, 26),
+				Position = UDim2.new(1, -74, 0.5, -13),
+				BackgroundColor3 = Here and PANEL or CONTROL,
+				Text = Here and "Here" or "Join",
+				TextColor3 = Here and DIM or WHITE,
+				Font = Enum.Font.GothamMedium,
+				TextSize = 11,
+				AutoButtonColor = false,
+				BorderSizePixel = 0,
+			}, Row)
+			Corner(Button, 7)
+
+			if not Here then
+				Button.MouseButton1Click:Connect(function()
+					JoinUser(U, Button)
+				end)
+			end
+
+			table.insert(Rows, Row)
+		end
+	end
+
+	Refresh = function()
+		if not ServerNow then
+			Ping()
+		end
+
+		if Base == "" then
+			SetStatus("add your Firebase link at the top of the script (DATABASE_URL)", false)
+			return
+		end
+
+		if not Http then
+			SetStatus("your executor has no http request function", false)
+			return
+		end
+
+		if Fetch() then
+			SetStatus("", true)
+			Rebuild()
+			Reconcile()
+		else
+			SetStatus("can't reach the database - check the link and rules", false)
+		end
+	end
+
+	Rebuild()
+
+	task.spawn(function()
+		SyncTags()
+
+		while UIAlive do
+			task.wait(TAG_SYNC_EVERY)
+			pcall(SyncTags)
+		end
+	end)
+
+	task.spawn(function()
+		while UIAlive do
+			Ping()
+			task.wait(PING_EVERY)
+		end
+	end)
+
+	task.spawn(function()
+		while UIAlive do
+			Refresh()
+			task.wait(LIST_EVERY)
+		end
+	end)
+
+	task.spawn(function()
+		while UIAlive do
+			pcall(Reconcile)
+			task.wait(2)
+		end
+	end)
+
+	task.spawn(function()
+		while UIAlive do
+			pcall(ReconcileTags)
+			task.wait(0.5)
+		end
+	end)
+
+	Conn(LocalPlayer.CharacterAdded:Connect(function()
+		task.wait(0.7)
+		pcall(Reconcile)
+	end))
+
+	Conn(Players.PlayerAdded:Connect(function()
+		task.delay(1.5, function()
+			if UIAlive then
+				pcall(Refresh)
+			end
+		end)
+	end))
+
+	Conn(Players.PlayerRemoving:Connect(function(Pl)
+		RestoreTag(Pl)
+
+		if Pl == LocalPlayer then
+			Call("DELETE", "/wmsUsers/" .. LocalPlayer.UserId)
+		end
+	end))
+
+	OnCleanup(function()
+		for Pl in pairs(TagState) do
+			RestoreTag(Pl)
+		end
+
+		for _, Gui in pairs(Badges) do
+			pcall(function()
+				Gui:Destroy()
+			end)
+		end
+
+		table.clear(Badges)
+		task.spawn(Call, "DELETE", "/wmsUsers/" .. LocalPlayer.UserId)
+	end)
+end)
+
+RunSection(function()
+	local AutoEnabled = false
+	local AutoWeaveOn = false
+	local DashEnabled = false
+	local DashDistance = 2.2
+	local WeaveSlideOn = false
+
+	local Linger = 0.4
+	local AnimSpeed = 0.9
+	local WalkSpeedDefault = 11
+	local WalkSpeedSetting = 11
+	local WalkSpeedOn = false
+	local WeaveBusy = false
+
+	local Sources = { Space = false, L2 = false, Game = false }
+	local SpaceHeld = false
+	local Weaving = false
+	local SignalOn = false
+	local LingerUntil = nil
+	local LastFire = 0
+
+	local Blocked = false
+	local OriginalSet
+	local OriginalPlay
+	local OriginalStop
+	local OriginalReset
+	local SpaceBound = false
+
+	local function RefreshHeld()
+		SpaceHeld = Sources.Space or Sources.L2 or Sources.Game
+	end
+
+	local function ClearInputSources()
+		Sources.Space = false
+		Sources.L2 = false
+		Sources.Game = false
+		RefreshHeld()
+	end
+
+	local function OwnWeaving()
+		return Weaving
+	end
+
+	Shared.V1Weaving = OwnWeaving
+
+	Shared.V1SignalOn = function()
+		return SignalOn
+	end
+
+	local function WalkSpeedCustom()
+		return WalkSpeedOn and math.abs(WalkSpeedSetting - WalkSpeedDefault) > 0.01
+	end
+
+	local function RestoreWalkSpeed()
+		local Character = LocalPlayer.Character
+		local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
+
+		if Humanoid and not ((AutoEnabled or AutoWeaveOn) and Weaving) and not WeaveBusy then
+			Humanoid.WalkSpeed = WalkSpeedDefault
+		end
+	end
+
+	local BlockRefs = 0
+
+	local function BlockGameWeave()
+		if Blocked or SpaceBound or not Modules.Weave then
+			return
+		end
+
+		local Weave = Modules.Weave
+		local Ok = pcall(function()
+			OriginalSet = Weave.Set
+			OriginalPlay = Weave.Play
+			OriginalStop = Weave.StopTrack
+			OriginalReset = Weave.Reset
+			Weave.Set = function() end
+			Weave.Play = function() end
+			Weave.StopTrack = function() end
+			Weave.Reset = function() end
+		end)
+
+		if Ok and Weave.Set ~= OriginalSet then
+			Blocked = true
+
+			if Modules.AttackState and Modules.AttackState.Active then
+				Modules.AttackState.Active.Weaving = false
+			end
+		else
+			pcall(function()
+				Weave.Set = OriginalSet or Weave.Set
+				Weave.Play = OriginalPlay or Weave.Play
+				Weave.StopTrack = OriginalStop or Weave.StopTrack
+				Weave.Reset = OriginalReset or Weave.Reset
+			end)
+
+			SpaceBound = true
+
+			ContextActionService:BindActionAtPriority(
+				"IsaevBlockSpace",
+				function()
+					return Enum.ContextActionResult.Sink
+				end,
+				false,
+				Enum.ContextActionPriority.High.Value + 1,
+				Enum.KeyCode.Space
+			)
+		end
+	end
+
+	local function UnblockGameWeave()
+		if Blocked and Modules.Weave then
+			pcall(function()
+				Modules.Weave.Set = OriginalSet
+				Modules.Weave.Play = OriginalPlay
+				Modules.Weave.StopTrack = OriginalStop
+				Modules.Weave.Reset = OriginalReset
+			end)
+		end
+
+		Blocked = false
+
+		if SpaceBound then
+			SpaceBound = false
+			ContextActionService:UnbindAction("IsaevBlockSpace")
+		end
+	end
+
+	local function AcquireBlock()
+		BlockRefs = BlockRefs + 1
+
+		if BlockRefs == 1 then
+			BlockGameWeave()
+		end
+	end
+
+	local function ReleaseBlock()
+		BlockRefs = math.max(0, BlockRefs - 1)
+
+		if BlockRefs == 0 then
+			UnblockGameWeave()
+		end
+	end
+
+	local TrackCache = { Character = nil, Style = nil, Weave = nil }
+
+	local function GetWeaveTracks()
+		local AttackState = Modules.AttackState
+		local Character = LocalPlayer.Character
+
+		if not AttackState or not Character then
+			return nil
+		end
+
+		local Style
+
+		pcall(function()
+			Style = AttackState.StyleName()
+		end)
+
+		if TrackCache.Weave and TrackCache.Character == Character and TrackCache.Style == Style then
+			return TrackCache.Weave
+		end
+
+		local Weave
+
+		pcall(function()
+			local Set = AttackState.StyleSet()
+			Weave = Set and Set.Weave
+		end)
+
+		TrackCache.Character = Character
+		TrackCache.Style = Style
+		TrackCache.Weave = Weave
+
+		return Weave
+	end
+
+	Shared.AcquireBlock = AcquireBlock
+	Shared.ReleaseBlock = ReleaseBlock
+	Shared.GetWeaveTracks = GetWeaveTracks
+	Shared.TrackCache = TrackCache
+
+	local Offsets = {
+		Front = CFrame.new(0, 0, -2.2),
+		Back = CFrame.new(0, 0, 2.2),
+		Right = CFrame.new(2.2, 0, 0),
+		Left = CFrame.new(-2.2, 0, 0),
+	}
+
+	local function CurrentDirection()
+		local Character = LocalPlayer.Character
+		local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
+		local Root = Character and Character:FindFirstChild("HumanoidRootPart")
+
+		if not Humanoid or not Root then
+			return nil
+		end
+
+		local Move = Humanoid.MoveDirection
+
+		if Move.Magnitude <= 0 then
+			return nil
+		end
+
+		local Forward = Move:Dot(Root.CFrame.LookVector)
+		local Side = Move:Dot(Root.CFrame.RightVector)
+
+		if Forward >= 0.5 then
+			return "Front", Root
+		elseif Forward <= -0.5 then
+			return "Back", Root
+		elseif Side >= 0.9 then
+			return "Right", Root
+		elseif Side <= -0.9 then
+			return "Left", Root
+		end
+
+		return nil
+	end
+
+	local OwnTrack
+	local OwnDirection
+	local OwnLooped = false
+	local LastDashDirection
+	local DashBlockedUntil = 0
+
+	local function StopOwnTrack()
+		if OwnTrack then
+			local Track = OwnTrack
+
+			pcall(function()
+				Track.Looped = OwnLooped
+
+				if Track.IsPlaying then
+					Track:Stop()
+				end
+			end)
+		end
+
+		OwnTrack = nil
+		OwnDirection = nil
+	end
+
+	local function Dash(Root, Direction)
+		if not DashEnabled then
+			return
+		end
+
+		local Now = os.clock()
+
+		if Now < DashBlockedUntil or LastDashDirection == Direction then
+			return
+		end
+
+		local Existing = Root:FindFirstChildOfClass("BodyPosition")
+
+		if Existing then
+			Existing:Destroy()
+			return
+		end
+
+		LastDashDirection = Direction
+		DashBlockedUntil = Now + 0.3
+
+		local Way = (Root.CFrame * Offsets[Direction]).Position - Root.Position
+
+		if Way.Magnitude <= 0 then
+			return
+		end
+
+		local Target = Root.Position + Way.Unit * DashDistance
+		local Made = false
+
+		if Modules.Movers then
+			Made = pcall(function()
+				Modules.Movers.Create("BodyPosition", "WeaveMove", {
+					MaxForce = Vector3.new(30000, 0, 30000),
+					P = 220,
+					D = 0,
+					Position = Target,
+				}, Root, 0.1)
+			end)
+		end
+
+		if not Made then
+			local Mover = Instance.new("BodyPosition")
+			Mover.Name = "WeaveMove"
+			Mover.MaxForce = Vector3.new(30000, 0, 30000)
+			Mover.P = 220
+			Mover.D = 0
+			Mover.Position = Target
+			Mover.Parent = Root
+
+			task.delay(0.1, function()
+				if Mover.Parent then
+					Mover:Destroy()
+				end
+			end)
+		end
+	end
+
+	local function UpdateWeave()
+		local Direction, Root = CurrentDirection()
+
+		if not Direction then
+			StopOwnTrack()
+			return
+		end
+
+		local Tracks = GetWeaveTracks()
+		local Track = Tracks and Tracks[Direction]
+
+		if not Track then
+			return
+		end
+
+		if OwnTrack == Track and Track.IsPlaying then
+			pcall(function()
+				if math.abs(Track.Speed - AnimSpeed) > 0.01 then
+					Track:AdjustSpeed(AnimSpeed)
+				end
+			end)
+
+			return
+		end
+
+		if OwnTrack and OwnTrack ~= Track then
+			StopOwnTrack()
+		end
+
+		if OwnTrack ~= Track then
+			OwnLooped = Track.Looped
+			OwnTrack = Track
+		end
+
+		Track.Looped = true
+		Track:Play(0.1, 1, AnimSpeed)
+
+		if OwnDirection ~= Direction then
+			OwnDirection = Direction
+			Dash(Root, Direction)
+		end
+	end
+
+	local PATTERNS = {
+		{ Id = "flip24", Kind = "flip", P = 0.24 },
+		{ Id = "flip27", Kind = "flip", P = 0.27 },
+		{ Id = "flip30", Kind = "flip", P = 0.30 },
+		{ Id = "flip33", Kind = "flip", P = 0.33 },
+		{ Id = "signal34", Kind = "signal", P = 0.34 },
+		{ Id = "signal36", Kind = "signal", P = 0.36 },
+	}
+
+	local Pattern = PATTERNS[2]
+
+	for _, Candidate in ipairs(PATTERNS) do
+		if Candidate.Id == Config.WeavePatternV2 then
+			Pattern = Candidate
+		end
+	end
+
+	local MIN_SPACING = 0.2
+	local RECOVER_AFTER = 0.05
+	local RECOVER_SPACING = 0.22
+	local FAST_SPACING = 0.10
+	local PunchFlipAt = nil
+	local LastCanAttackPoll = true
+
+	local FramesOn = false
+	local OffSince = nil
+	local FramesConn = nil
+	local PendingTrueAt = nil
+
+	local function WatchFrames(Character)
+		if FramesConn then
+			FramesConn:Disconnect()
+			FramesConn = nil
+		end
+
+		FramesOn = false
+		OffSince = os.clock()
+
+		if not Character then
+			return
+		end
+
+		FramesOn = Character:GetAttribute("WeaveFrames") == true
+		OffSince = FramesOn and nil or os.clock()
+
+		FramesConn = Character:GetAttributeChangedSignal("WeaveFrames"):Connect(function()
+			FramesOn = Character:GetAttribute("WeaveFrames") == true
+
+			if FramesOn then
+				OffSince = nil
+			elseif not OffSince then
+				OffSince = os.clock()
+			end
+		end)
+	end
+
+	local function FireWeave(State)
+		local Combat = Modules.Combat
+
+		if not Combat then
+			return
+		end
+
+		pcall(function()
+			Combat.Weave:Fire(State)
+		end)
+
+		Shared.LastWeaveFire = os.clock()
+
+		if State then
+			LastFire = os.clock()
+		end
+	end
+
+	local function Trigger(Kind)
+		if Kind == "flip" then
+			FireWeave(false)
+			FireWeave(true)
+		else
+			FireWeave(true)
+		end
+	end
+
+	local function ServicePending(Now)
+		if PendingTrueAt and Now >= PendingTrueAt then
+			PendingTrueAt = nil
+			FireWeave(true)
+		end
+	end
+
+	local function StopWeave()
+		Weaving = false
+		LastDashDirection = nil
+		LingerUntil = nil
+		PendingTrueAt = nil
+
+		if SignalOn then
+			SignalOn = false
+			FireWeave(false)
+		end
+
+		StopOwnTrack()
+	end
+
+	local ToolConn = nil
+
+	local function WatchTools(Character)
+		if ToolConn then
+			ToolConn:Disconnect()
+			ToolConn = nil
+		end
+
+		if not Character then
+			return
+		end
+
+		ToolConn = Character.ChildRemoved:Connect(function(Child)
+			if Child.Name == "Fight" and (AutoEnabled or AutoWeaveOn) then
+				ClearInputSources()
+				StopWeave()
+			end
+		end)
+	end
+
+	local function Tick()
+		if not (AutoEnabled or AutoWeaveOn) or not Modules.Combat then
+			return
+		end
+
+		local Now = os.clock()
+
+		local Character = LocalPlayer.Character
+		local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
+		local AliveNow = Humanoid ~= nil and Humanoid.Health > 0
+
+		if not AliveNow then
+			Weaving = false
+			SignalOn = false
+			LingerUntil = nil
+			PendingTrueAt = nil
+			StopOwnTrack()
+			return
+		end
+
+		if not HasFight() then
+			if SpaceHeld or Weaving or SignalOn then
+				ClearInputSources()
+				StopWeave()
+			end
+
+			return
+		end
+
+		local CanAttackNow = true
+
+		pcall(function()
+			CanAttackNow = Modules.AttackState.Active.CanAttack ~= false
+		end)
+
+		if CanAttackNow and not LastCanAttackPoll then
+			PunchFlipAt = Now
+		end
+
+		LastCanAttackPoll = CanAttackNow
+
+		local Moving = Humanoid.MoveDirection.Magnitude > 0.05
+
+		local Animating = SpaceHeld and Moving
+		local WantWeave = AutoWeaveOn or Animating
+
+		if WantWeave then
+			if Animating then
+				if not Weaving then
+					Weaving = true
+					LastDashDirection = nil
+				end
+			else
+				if Weaving then
+					Weaving = false
+					LastDashDirection = nil
+				end
+
+				StopOwnTrack()
+			end
+
+			if not SignalOn then
+				PunchFlipAt = nil
+			end
+
+			SignalOn = true
+			LingerUntil = nil
+
+			if Animating then
+				UpdateWeave()
+			end
+		elseif Weaving then
+			Weaving = false
+			LastDashDirection = nil
+			StopOwnTrack()
+
+			if SignalOn then
+				LingerUntil = Now + Linger
+			end
+		end
+
+		if SignalOn then
+			if not WantWeave and LingerUntil and Now >= LingerUntil then
+				SignalOn = false
+				LingerUntil = nil
+				PendingTrueAt = nil
+				FireWeave(false)
+			else
+				ServicePending(Now)
+
+				local Gap = Now - LastFire
+				local Send = Gap >= math.max(Pattern.P, MIN_SPACING)
+
+				if not Send and PunchFlipAt and Now >= PunchFlipAt and Gap >= FAST_SPACING then
+					PunchFlipAt = nil
+					Send = true
+				end
+
+				if not Send and not FramesOn and OffSince and Now - OffSince >= RECOVER_AFTER and Gap >= RECOVER_SPACING then
+					Send = true
+				end
+
+				if Send and not PendingTrueAt then
+					Trigger(Pattern.Kind)
+				end
+			end
+		end
+	end
+
+	Conn(RunService.Heartbeat:Connect(Tick))
+
+	local InputHooked = false
+
+	local function HookGameInput()
+		if InputHooked or not Modules.Input then
+			return
+		end
+
+		InputHooked = true
+
+		pcall(function()
+			Modules.Input.Began:Connect(function(Action)
+				if Action == "Weave" and AutoEnabled and HasFight() then
+					Sources.Game = true
+					RefreshHeld()
+					Tick()
+				end
+			end)
+
+			Modules.Input.Ended:Connect(function(Action)
+				if Action == "Weave" then
+					Sources.Game = false
+					RefreshHeld()
+					Tick()
+				end
+			end)
+		end)
+	end
+
+	local LockedSpeed
+	local MomentumCleared = false
+
+	local function EnforceNoSlide()
+		local Character = LocalPlayer.Character
+		local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
+
+		if not Humanoid then
+			LockedSpeed = nil
+			return
+		end
+
+		local Running = (AutoEnabled or AutoWeaveOn) and Weaving and HasFight()
+
+		if Running and not WeaveSlideOn then
+			if not LockedSpeed and Humanoid.WalkSpeed > 0 then
+				LockedSpeed = Humanoid.WalkSpeed
+			end
+
+			if LockedSpeed and Humanoid.WalkSpeed ~= 0 then
+				Humanoid.WalkSpeed = 0
+			end
+
+			if not MomentumCleared then
+				MomentumCleared = true
+
+				local Root = Character:FindFirstChild("HumanoidRootPart")
+
+				if Root then
+					local Velocity = Root.AssemblyLinearVelocity
+					Root.AssemblyLinearVelocity = Vector3.new(0, Velocity.Y, 0)
+				end
+			end
+		else
+			MomentumCleared = false
+
+			if LockedSpeed then
+				if Humanoid.WalkSpeed == 0 then
+					Humanoid.WalkSpeed = WalkSpeedCustom() and WalkSpeedSetting or LockedSpeed
+				end
+
+				LockedSpeed = nil
+			end
+		end
+	end
+
+	pcall(function()
+		RunService:UnbindFromRenderStep("IsaevNoSlide")
+	end)
+
+	RunService:BindToRenderStep("IsaevNoSlide", Enum.RenderPriority.Last.Value, EnforceNoSlide)
+	Conn(RunService.Heartbeat:Connect(EnforceNoSlide))
+
+	local function WatchWalkSpeed(Character)
+		task.spawn(function()
+			local Humanoid = Character:WaitForChild("Humanoid", 10)
+
+			if Humanoid then
+				Humanoid:GetPropertyChangedSignal("WalkSpeed"):Connect(EnforceNoSlide)
+			end
+		end)
+	end
+
+	if LocalPlayer.Character then
+		WatchFrames(LocalPlayer.Character)
+		WatchTools(LocalPlayer.Character)
+		WatchWalkSpeed(LocalPlayer.Character)
+	end
+
+	Conn(LocalPlayer.CharacterAdded:Connect(function(Character)
+		WatchFrames(Character)
+		WatchTools(Character)
+		WatchWalkSpeed(Character)
+
+		TrackCache.Weave = nil
+		OwnTrack = nil
+		OwnDirection = nil
+		LastDashDirection = nil
+
+		Sources.Space = UserInputService:IsKeyDown(Enum.KeyCode.Space)
+		Sources.L2 = false
+		Sources.Game = false
+		RefreshHeld()
+	end))
+
+	Conn(RunService.RenderStepped:Connect(function()
+		if not WalkSpeedCustom() then
+			return
+		end
+
+		if ((AutoEnabled or AutoWeaveOn) and Weaving) or WeaveBusy then
+			return
+		end
+
+		local Character = LocalPlayer.Character
+		local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
+
+		if Humanoid and Humanoid.Health > 0 and Humanoid.WalkSpeed ~= WalkSpeedSetting then
+			Humanoid.WalkSpeed = WalkSpeedSetting
+		end
+	end))
+
+	Conn(UserInputService.InputBegan:Connect(function(Input)
+		if not (AutoEnabled or AutoWeaveOn) then
+			return
+		end
+
+		if Input.KeyCode == Enum.KeyCode.Space then
+			if UserInputService:GetFocusedTextBox() or not HasFight() then
+				return
+			end
+
+			Sources.Space = true
+			RefreshHeld()
+			Tick()
+		elseif Input.KeyCode == Enum.KeyCode.ButtonL2 then
+			if not HasFight() then
+				return
+			end
+
+			Sources.L2 = true
+			RefreshHeld()
+			Tick()
+		end
+	end))
+
+	Conn(UserInputService.InputEnded:Connect(function(Input)
+		if Input.KeyCode == Enum.KeyCode.Space then
+			Sources.Space = false
+			RefreshHeld()
+			Tick()
+		elseif Input.KeyCode == Enum.KeyCode.ButtonL2 then
+			Sources.L2 = false
+			RefreshHeld()
+			Tick()
+		end
+	end))
+
+	Conn(UserInputService.WindowFocusReleased:Connect(function()
+		ClearInputSources()
+	end))
+
+	OnCleanup(function()
+		if ToolConn then
+			ToolConn:Disconnect()
+		end
+
+		if FramesConn then
+			FramesConn:Disconnect()
+		end
+
+		pcall(function()
+			RunService:UnbindFromRenderStep("IsaevNoSlide")
+		end)
+
+		AutoEnabled = false
+		AutoWeaveOn = false
+		StopWeave()
+		UnblockGameWeave()
+	end)
+
+	do
+		local WEAVE_IDS = {
+			["18312351760"] = true,
+			["18312346524"] = true,
+			["18312348771"] = true,
+			["18312344029"] = true,
+			["17819695187"] = true,
+			["17819683172"] = true,
+			["17819691229"] = true,
+			["17819688197"] = true,
+		}
+
+		local systemData = {
+			Enabled = false,
+			WeaveWalkSpeed = 10,
+			FallbackWalkSpeed = 11,
+			PreWeaveWalkSpeed = 11,
+			IsWeaving = false,
+		}
+
+		local character
+		local humanoid
+		local rootPart
+		local animator
+
+		local function setupCharacter(newCharacter)
+			character = newCharacter
+			humanoid = character:WaitForChild("Humanoid")
+			rootPart = character:WaitForChild("HumanoidRootPart")
+			animator = humanoid:WaitForChild("Animator")
+
+			systemData.IsWeaving = false
+			systemData.PreWeaveWalkSpeed = humanoid.WalkSpeed
+		end
+
+		if LocalPlayer.Character then
+			task.spawn(setupCharacter, LocalPlayer.Character)
+		end
+
+		Conn(LocalPlayer.CharacterAdded:Connect(function(newCharacter)
+			setupCharacter(newCharacter)
+		end))
+
+		local function checkIsWeaving()
+			if OwnWeaving() then
+				return true
+			end
+
+			if not animator then
+				return false
+			end
+
+			for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+				if track.IsPlaying and track.Animation then
+					local animId = tostring(track.Animation.AnimationId)
+
+					for id in pairs(WEAVE_IDS) do
+						if string.find(animId, id, 1, true) then
+							return true
+						end
+					end
+				end
+			end
+
+			return false
+		end
+
+		local function stripDashVelocities()
+			if not character or not rootPart then
+				return
+			end
+
+			for _, child in ipairs(rootPart:GetChildren()) do
+				if child:IsA("LinearVelocity")
+					or child:IsA("BodyVelocity")
+					or child:IsA("VectorForce")
+					or child:IsA("BodyThrust") then
+					child:Destroy()
+				end
+			end
+
+			local currentVel = rootPart.AssemblyLinearVelocity
+			local horizontalVel = Vector3.new(currentVel.X, 0, currentVel.Z)
+			local maxSpeed = systemData.WeaveWalkSpeed + 1
+
+			if horizontalVel.Magnitude > maxSpeed then
+				local cappedVel = horizontalVel.Unit * maxSpeed
+
+				rootPart.AssemblyLinearVelocity = Vector3.new(cappedVel.X, currentVel.Y, cappedVel.Z)
+			end
+		end
+
+		local function forceUnlockMovement()
+			if not humanoid or humanoid.Health <= 0 then
+				return
+			end
+
+			local restoreSpeed = systemData.PreWeaveWalkSpeed
+
+			if WalkSpeedCustom() then
+				restoreSpeed = WalkSpeedSetting
+			elseif not restoreSpeed
+				or restoreSpeed == systemData.WeaveWalkSpeed
+				or restoreSpeed > systemData.FallbackWalkSpeed then
+				restoreSpeed = systemData.FallbackWalkSpeed
+			end
+
+			humanoid.WalkSpeed = restoreSpeed
+			humanoid.AutoRotate = true
+		end
+
+		Conn(RunService.RenderStepped:Connect(function()
+			if not systemData.Enabled
+				or not humanoid
+				or humanoid.Health <= 0 then
+				WeaveBusy = false
+				return
+			end
+
+			local activeWeave = checkIsWeaving()
+			WeaveBusy = activeWeave
+
+			if activeWeave then
+				if not systemData.IsWeaving then
+					if WalkSpeedCustom() then
+						systemData.PreWeaveWalkSpeed = WalkSpeedSetting
+					elseif humanoid.WalkSpeed > 0
+						and humanoid.WalkSpeed ~= systemData.WeaveWalkSpeed then
+						systemData.PreWeaveWalkSpeed = math.min(
+							humanoid.WalkSpeed,
+							systemData.FallbackWalkSpeed
+						)
+					end
+
+					systemData.IsWeaving = true
+				end
+
+				humanoid.WalkSpeed = systemData.WeaveWalkSpeed
+				stripDashVelocities()
+			elseif systemData.IsWeaving then
+				systemData.IsWeaving = false
+				forceUnlockMovement()
+			end
+		end))
+
+		local AutoToggle = CreateToggle(WeavePage, "Weave Mac", false, function(State)
+			AutoEnabled = State
+
+			if State then
+				local V2Control = FeatureControls.WeaveV2
+
+				if V2Control and V2Control.Get() then
+					V2Control.Set(false)
+				end
+
+				task.spawn(function()
+					if LoadModules() and AutoEnabled then
+						AcquireBlock()
+					end
+
+					HookGameInput()
+				end)
+			else
+				ClearInputSources()
+
+				if not AutoWeaveOn then
+					StopWeave()
+				end
+
+				ReleaseBlock()
+			end
+		end, "Weave")
+		AutoToggle.LayoutOrder = 1
+
+		local DashToggle = CreateToggle(WeavePage, "Weave Glide", false, function(State)
+			DashEnabled = State
+		end, "WeaveDash")
+		DashToggle.LayoutOrder = 4
+
+		local DashSlider = CreateSlider(WeavePage, "Glide Distance", 0.5, 10, 0.1, 2.2, function(Value)
+			DashDistance = Value
+		end, "DashDistance")
+		DashSlider.LayoutOrder = 5
+
+		local SlideToggle = CreateToggle(WeavePage, "Weave Slide", false, function(State)
+			systemData.Enabled = State
+			WeaveSlideOn = State
+
+			if not systemData.Enabled then
+				systemData.IsWeaving = false
+				WeaveBusy = false
+				forceUnlockMovement()
+			end
+		end, "WeaveSlide")
+		SlideToggle.LayoutOrder = 6
+
+		local SpeedSlider = CreateSlider(WeavePage, "Weave Speed", 6, 50, 0.1, 10, function(Value)
+			systemData.WeaveWalkSpeed = Value
+		end, "WeaveSpeed")
+		SpeedSlider.LayoutOrder = 7
+
+		CreateGap(WeavePage, 6, 8)
+
+		local WalkToggle = CreateToggle(WeavePage, "Walk Speed", false, function(State)
+			local WasCustom = WalkSpeedCustom()
+			WalkSpeedOn = State
+
+			if WasCustom and not WalkSpeedCustom() then
+				RestoreWalkSpeed()
+			end
+		end)
+		WalkToggle.LayoutOrder = 9
+
+		local WalkSlider = CreateSlider(WeavePage, "Walk Speed Value", 5, 50, 1, 11, function(Value)
+			local WasCustom = WalkSpeedCustom()
+
+			WalkSpeedSetting = Value
+
+			if WasCustom and not WalkSpeedCustom() then
+				RestoreWalkSpeed()
+			end
+		end, "WalkSpeed")
+		WalkSlider.LayoutOrder = 10
+	end
+
+	local AutoWeaveToggle = CreateToggle(WeavePage, "Autoweave", false, function(State)
+		AutoWeaveOn = State
+
+		if State then
+			local V2Control = FeatureControls.WeaveV2
+
+			if V2Control and V2Control.Get() then
+				V2Control.Set(false)
+			end
+
+			task.spawn(function()
+				if LoadModules() and AutoWeaveOn then
+					AcquireBlock()
+				end
+			end)
+		else
+			if not AutoEnabled then
+				ClearInputSources()
+				StopWeave()
+			end
+
+			ReleaseBlock()
+		end
+	end, "AutoWeave")
+	AutoWeaveToggle.LayoutOrder = 13
+
+	local DelaySlider = CreateSlider(WeavePage, "Turn Off Delay", 0, 1, 0.05, 0.4, function(Value)
+		Linger = Value
+	end, "TurnOffDelay")
+	DelaySlider.LayoutOrder = 14
+end)
+
+RunSection(function()
+	local V2 = { Enabled = false, Distance = 3.7, Duration = 0.28 }
+
+	local ANIM_SPEED = 1
+	local DIAG_SPEED = 18
+	local JITTER_STEP = 0.08
+	local JITTER_AMOUNT = 0.25
+	local SLIDE_SMOOTH = 0.012
+
+	local FLIP_P = 0.27
+	local MIN_SPACING = 0.2
+	local RECOVER_AFTER = 0.05
+	local RECOVER_SPACING = 0.22
+	local LINGER = 0.15
+	local BUSY_LINGER = 0.12
+	local FAST_SPACING = 0.10
+	local PunchFlipAt = nil
+	local LastCanAttackPoll = true
+
+	local Stopped = false
+	local JitterAt, JitterFlip = 0, false
+	local Current = nil
+	local Desired = nil
+
+	local OwnTrack, OwnLooped = nil, false
+	local ExtraTrack, ExtraLooped = nil, false
+	local SlideId = 0
+	local Sliding = false
+	local Holding = false
+	local SavedSpeed = nil
+	local LastSig = nil
+
+	local Acquired = false
+
+	local function AcquireWeaveBlock()
+		if not Acquired and Shared.AcquireBlock then
+			Acquired = true
+			Shared.AcquireBlock()
+		end
+	end
+
+	local function ReleaseWeaveBlock()
+		if Acquired and Shared.ReleaseBlock then
+			Acquired = false
+			Shared.ReleaseBlock()
+		end
+	end
+
+	local function GetHumanoid()
+		local Character = LocalPlayer.Character
+		return Character and Character:FindFirstChildOfClass("Humanoid")
+	end
+
+	local LastBusyAt = -100
+
+	local function Attacking()
+		local Active = Modules.AttackState and Modules.AttackState.Active
+
+		if not Active then
+			return false
+		end
+
+		local Busy = false
+
+		pcall(function()
+			local M1 = Active.CurrentM1
+
+			if M1 and M1.IsPlaying then
+				Busy = true
+			end
+
+			if Active.Stomping or Active.Slamming or Active.Shoving then
+				Busy = true
+			end
+		end)
+
+		local Now = os.clock()
+
+		if Busy then
+			LastBusyAt = Now
+			return true
+		end
+
+		return Now - LastBusyAt < BUSY_LINGER
+	end
+
+	local function HoldOff()
+		if Shared.NoWeaveDelay then
+			return false
+		end
+
+		return Attacking()
+	end
+
+	local SignalOn = false
+	local LingerUntil = nil
+	local LastFire = 0
+	local FramesOn = false
+	local OffSince = nil
+	local FramesConn = nil
+
+	local function FireWeave(State)
+		local Combat = Modules.Combat
+
+		if not Combat then
+			return
+		end
+
+		pcall(function()
+			Combat.Weave:Fire(State)
+		end)
+
+		Shared.LastWeaveFire = os.clock()
+
+		if State then
+			LastFire = os.clock()
+		end
+	end
+
+	local function FireFlip()
+		FireWeave(false)
+		FireWeave(true)
+	end
+
+	local function SignalStop()
+		LingerUntil = nil
+
+		if SignalOn then
+			SignalOn = false
+			FireWeave(false)
+		end
+	end
+
+	local function SignalStep(Want)
+		if not V2.Enabled or not Modules.Combat then
+			return
+		end
+
+		local Now = os.clock()
+		local Humanoid = GetHumanoid()
+
+		if not Humanoid or Humanoid.Health <= 0 then
+			SignalOn = false
+			LingerUntil = nil
+			return
+		end
+
+		if not HasFight() then
+			SignalStop()
+			return
+		end
+
+		if Want then
+			if not SignalOn then
+				PunchFlipAt = nil
+			end
+
+			SignalOn = true
+			LingerUntil = nil
+		elseif SignalOn and not LingerUntil then
+			LingerUntil = Now + LINGER
+		end
+
+		if not SignalOn then
+			return
+		end
+
+		if not Want and LingerUntil and Now >= LingerUntil then
+			SignalOn = false
+			LingerUntil = nil
+			PunchFlipAt = nil
+			FireWeave(false)
+			return
+		end
+
+		local CanAttackNow = true
+
+		pcall(function()
+			CanAttackNow = Modules.AttackState.Active.CanAttack ~= false
+		end)
+
+		if CanAttackNow and not LastCanAttackPoll then
+			PunchFlipAt = Now
+		end
+
+		LastCanAttackPoll = CanAttackNow
+
+		local Gap = Now - LastFire
+		local Busy = HoldOff()
+
+		if Gap >= math.max(FLIP_P, MIN_SPACING) then
+			PunchFlipAt = nil
+
+			if Busy then
+				FireWeave(true)
+			else
+				FireFlip()
+			end
+		elseif not Busy and PunchFlipAt and Now >= PunchFlipAt and Gap >= FAST_SPACING then
+			PunchFlipAt = nil
+			FireFlip()
+		elseif not Busy and not FramesOn and OffSince and Now - OffSince >= RECOVER_AFTER and Gap >= RECOVER_SPACING then
+			FireFlip()
+		end
+	end
+
+	local function WatchFrames(Character)
+		if FramesConn then
+			FramesConn:Disconnect()
+			FramesConn = nil
+		end
+
+		FramesOn = false
+		OffSince = os.clock()
+
+		if not Character then
+			return
+		end
+
+		FramesOn = Character:GetAttribute("WeaveFrames") == true
+		OffSince = (not FramesOn) and os.clock() or nil
+
+		FramesConn = Character:GetAttributeChangedSignal("WeaveFrames"):Connect(function()
+			FramesOn = Character:GetAttribute("WeaveFrames") == true
+
+			if FramesOn then
+				OffSince = nil
+			elseif not OffSince then
+				OffSince = os.clock()
+			end
+		end)
+	end
+
+	local function StopExtra()
+		if ExtraTrack then
+			local Track = ExtraTrack
+
+			pcall(function()
+				Track.Looped = ExtraLooped
+
+				if Track.IsPlaying then
+					Track:Stop(0.1)
+				end
+			end)
+		end
+
+		ExtraTrack = nil
+	end
+
+	local function StopTrack()
+		StopExtra()
+
+		if OwnTrack then
+			local Track = OwnTrack
+
+			pcall(function()
+				Track.Looped = OwnLooped
+
+				if Track.IsPlaying then
+					Track:Stop(0.1)
+				end
+			end)
+		end
+
+		OwnTrack = nil
+	end
+
+	local function PlayTrack(Name)
+		local Tracks = Shared.GetWeaveTracks and Shared.GetWeaveTracks()
+		local Track = Tracks and Tracks[Name]
+
+		if not Track then
+			return false
+		end
+
+		if OwnTrack ~= Track then
+			StopTrack()
+			OwnLooped = Track.Looped
+			OwnTrack = Track
+		end
+
+		pcall(function()
+			Track.Looped = true
+
+			if not Track.IsPlaying then
+				Track:Play(0.1, 1, ANIM_SPEED)
+			end
+		end)
+
+		return true
+	end
+
+	local function PlayDiag(Main, Side)
+		PlayTrack(Side)
+
+		local Tracks = Shared.GetWeaveTracks and Shared.GetWeaveTracks()
+		local Track = Tracks and Tracks[Main]
+
+		if not Track then
+			return
+		end
+
+		if ExtraTrack ~= Track then
+			StopExtra()
+			ExtraLooped = Track.Looped
+			ExtraTrack = Track
+		end
+
+		pcall(function()
+			Track.Looped = true
+
+			if not Track.IsPlaying then
+				Track:Play(0.1, 0.7, ANIM_SPEED)
+			end
+		end)
+	end
+
+	local FloatStart, FloatStop, FloatToggle = function() end, function() end, function() end
+
+	Shared.V2SignalOn = function()
+		return SignalOn
+	end
+
+	local function Release()
+		Desired = nil
+		Current = nil
+		SlideId = SlideId + 1
+		Sliding = false
+		Holding = false
+		FloatStop()
+		StopTrack()
+
+		local Humanoid = GetHumanoid()
+
+		if Humanoid and SavedSpeed then
+			Humanoid.WalkSpeed = SavedSpeed
+		end
+
+		SavedSpeed = nil
+
+		local Character = LocalPlayer.Character
+		local Root = Character and Character:FindFirstChild("HumanoidRootPart")
+
+		if Root then
+			local V = Root.AssemblyLinearVelocity
+			Root.AssemblyLinearVelocity = Vector3.new(0, V.Y, 0)
+		end
+	end
+
+	local AirWalkOn = false
+	local AirForce = nil
+	local AirAttach = nil
+
+	local function AirActive()
+		if UserInputService:GetFocusedTextBox() then
+			return false
+		end
+
+		if UserInputService:IsKeyDown(Enum.KeyCode.Space) then
+			return true
+		end
+
+		local L2 = false
+
+		pcall(function()
+			L2 = UserInputService:IsGamepadButtonDown(Enum.UserInputType.Gamepad1, Enum.KeyCode.ButtonL2)
+		end)
+
+		return L2
+	end
+
+	local function AirStop()
+		if AirForce then
+			AirForce:Destroy()
+			AirForce = nil
+		end
+
+		if AirAttach then
+			AirAttach:Destroy()
+			AirAttach = nil
+		end
+	end
+
+	local function AirStep()
+		if not (AirWalkOn and AirActive()) then
+			if AirForce then
+				AirStop()
+			end
+
+			return
+		end
+
+		local Character = LocalPlayer.Character
+		local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
+		local Root = Character and Character:FindFirstChild("HumanoidRootPart")
+
+		if not Humanoid or not Root or Humanoid.Health <= 0 then
+			AirStop()
+			return
+		end
+
+		if Humanoid.FloorMaterial ~= Enum.Material.Air then
+			AirStop()
+			return
+		end
+
+		local Lift = Vector3.new(0, workspace.Gravity * Root.AssemblyMass, 0)
+
+		if not AirForce or AirForce.Parent ~= Root then
+			AirStop()
+
+			AirAttach = Instance.new("Attachment")
+			AirAttach.Name = "IsaevAirAttach"
+			AirAttach.Parent = Root
+
+			AirForce = Instance.new("VectorForce")
+			AirForce.Name = "IsaevAirHold"
+			AirForce.Attachment0 = AirAttach
+			AirForce.RelativeTo = Enum.ActuatorRelativeTo.World
+			AirForce.ApplyAtCenterOfMass = true
+			AirForce.Force = Lift
+			AirForce.Parent = Root
+
+			local V = Root.AssemblyLinearVelocity
+			Root.AssemblyLinearVelocity = Vector3.new(V.X, 0, V.Z)
+		else
+			AirForce.Force = Lift
+		end
+
+		local V = Root.AssemblyLinearVelocity
+		Root.AssemblyLinearVelocity = Vector3.new(V.X, 0, V.Z)
+	end
+
+	local Hold = { Game = false }
+
+	local function Down(Key)
+		return UserInputService:IsKeyDown(Key)
+	end
+
+	local function HoldingNow()
+		if Hold.Game then
+			return true
+		end
+
+		if not UserInputService:GetFocusedTextBox() and Down(Enum.KeyCode.Space) then
+			return true
+		end
+
+		local L2 = false
+
+		pcall(function()
+			L2 = UserInputService:IsGamepadButtonDown(Enum.UserInputType.Gamepad1, Enum.KeyCode.ButtonL2)
+		end)
+
+		return L2
+	end
+
+	local function SplitDirection(X, Z)
+		local Main, Side
+
+		if Z ~= 0 then
+			Main = Z < 0 and "Front" or "Back"
+			Side = X ~= 0 and (X > 0 and "Right" or "Left") or nil
+		else
+			Main = X > 0 and "Right" or "Left"
+		end
+
+		return Vector3.new(X, 0, Z).Unit, Main, Side
+	end
+
+	local function ReadKeys()
+		local X, Z = 0, 0
+
+		if Down(Enum.KeyCode.W) then
+			Z = Z - 1
+		end
+
+		if Down(Enum.KeyCode.S) then
+			Z = Z + 1
+		end
+
+		if Down(Enum.KeyCode.D) then
+			X = X + 1
+		end
+
+		if Down(Enum.KeyCode.A) then
+			X = X - 1
+		end
+
+		if X == 0 and Z == 0 then
+			return nil
+		end
+
+		return SplitDirection(X, Z)
+	end
+
+	local function ReadMove()
+		local Character = LocalPlayer.Character
+		local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
+		local Root = Character and Character:FindFirstChild("HumanoidRootPart")
+
+		if not Humanoid or not Root then
+			return nil
+		end
+
+		local Move = Humanoid.MoveDirection
+
+		if Move.Magnitude < 0.2 then
+			return nil
+		end
+
+		local Local = Root.CFrame:VectorToObjectSpace(Move)
+		local X = math.abs(Local.X) > 0.35 and (Local.X > 0 and 1 or -1) or 0
+		local Z = math.abs(Local.Z) > 0.35 and (Local.Z > 0 and 1 or -1) or 0
+
+		if X == 0 and Z == 0 then
+			return nil
+		end
+
+		return SplitDirection(X, Z)
+	end
+
+	local function ReadInput()
+		local Local, Main, Side = ReadKeys()
+
+		if Local then
+			return Local, Main, Side
+		end
+
+		return ReadMove()
+	end
+
+	local InputHooked = false
+
+	local function HookInput()
+		if InputHooked or not Modules.Input then
+			return
+		end
+
+		InputHooked = true
+
+		pcall(function()
+			Conn(Modules.Input.Began:Connect(function(Action)
+				if Action == "Weave" then
+					Hold.Game = true
+				end
+			end))
+
+			Conn(Modules.Input.Ended:Connect(function(Action)
+				if Action == "Weave" then
+					Hold.Game = false
+				end
+			end))
+		end)
+	end
+
+	local function ZeroVelocity()
+		Desired = nil
+		Current = nil
+
+		local Character = LocalPlayer.Character
+		local Root = Character and Character:FindFirstChild("HumanoidRootPart")
+
+		if Root then
+			local V = Root.AssemblyLinearVelocity
+			Root.AssemblyLinearVelocity = Vector3.new(0, V.Y, 0)
+		end
+	end
+
+	Conn(RunService.Stepped:Connect(function(_, Dt)
+		if not Desired or Stopped then
+			Current = nil
+			return
+		end
+
+		if HoldOff() then
+			Current = nil
+			return
+		end
+
+		local Character = LocalPlayer.Character
+		local Root = Character and Character:FindFirstChild("HumanoidRootPart")
+
+		if not Root then
+			return
+		end
+
+		if Current and SLIDE_SMOOTH > 0 and Dt and Dt > 0 then
+			Current = Current:Lerp(Desired, 1 - math.exp(-Dt / SLIDE_SMOOTH))
+		else
+			Current = Desired
+		end
+
+		local V = Root.AssemblyLinearVelocity
+		Root.AssemblyLinearVelocity = Vector3.new(Current.X, V.Y, Current.Z)
+	end))
+
+	local function Step(Local, Main)
+		local Character = LocalPlayer.Character
+		local Root = Character and Character:FindFirstChild("HumanoidRootPart")
+
+		StopExtra()
+
+		if not Root or not PlayTrack(Main) then
+			return
+		end
+
+		SlideId = SlideId + 1
+		Sliding = true
+
+		local Mine = SlideId
+		local World = (Root.CFrame:VectorToWorldSpace(Local) * Vector3.new(1, 0, 1)).Unit
+		local Duration = V2.Duration
+		local Peak = 2 * V2.Distance / Duration
+
+		task.spawn(function()
+			local Start = os.clock()
+
+			while Mine == SlideId and not Stopped do
+				local T = (os.clock() - Start) / Duration
+
+				if T >= 1 or not Root.Parent then
+					break
+				end
+
+				local Speed = Peak * (1 - T)
+				Desired = Vector3.new(World.X * Speed, 0, World.Z * Speed)
+				RunService.Heartbeat:Wait()
+			end
+
+			if Mine ~= SlideId then
+				return
+			end
+
+			Sliding = false
+			ZeroVelocity()
+		end)
+	end
+
+	local function Begin()
+		local Character = LocalPlayer.Character
+		local Humanoid = GetHumanoid()
+		local Active = Modules.AttackState and Modules.AttackState.Active
+
+		if not Character or not Humanoid or Humanoid.Health <= 0 or not Active then
+			return false
+		end
+
+		if not Shared.NoWeaveDelay and (Active.Stomping or Active.Slamming or Active.Shoving) then
+			return false
+		end
+
+		Holding = true
+		LastSig = nil
+		FloatStart()
+
+		if not SavedSpeed then
+			SavedSpeed = Humanoid.WalkSpeed > 0 and Humanoid.WalkSpeed or 10
+		end
+
+		Humanoid.WalkSpeed = 0
+
+		return true
+	end
+
+	local function Drive(Space)
+		if not Holding then
+			if V2.Enabled and Space and HasFight() and ReadInput() then
+				Begin()
+			end
+
+			if not Holding then
+				return
+			end
+		end
+
+		if not V2.Enabled or not HasFight() or not Space then
+			Release()
+			return
+		end
+
+		local Humanoid = GetHumanoid()
+
+		if Humanoid and Humanoid.WalkSpeed ~= 0 then
+			Humanoid.WalkSpeed = 0
+		end
+
+		if HoldOff() then
+			return
+		end
+
+		local Now = os.clock()
+		local Local, Main, Side = ReadInput()
+		local Sig = Local and (Main .. (Side or "")) or nil
+
+		if Sig ~= LastSig then
+			LastSig = Sig
+
+			if not Sig then
+				SlideId = SlideId + 1
+				Sliding = false
+				ZeroVelocity()
+			elseif Side then
+				SlideId = SlideId + 1
+				Sliding = false
+				JitterAt = 0
+				PlayDiag(Main, Side)
+			else
+				Step(Local, Main)
+			end
+		end
+
+		if Sig and Side then
+			local Character = LocalPlayer.Character
+			local Root = Character and Character:FindFirstChild("HumanoidRootPart")
+
+			if Root then
+				if Now - JitterAt >= JITTER_STEP then
+					JitterAt = Now
+					JitterFlip = not JitterFlip
+				end
+
+				local Factor = 1 + (JitterFlip and JITTER_AMOUNT or -JITTER_AMOUNT)
+				local World = (Root.CFrame:VectorToWorldSpace(Local) * Vector3.new(1, 0, 1)).Unit
+				Desired = Vector3.new(World.X * DIAG_SPEED * Factor, 0, World.Z * DIAG_SPEED * Factor)
+			end
+
+			PlayDiag(Main, Side)
+		end
+
+		if OwnTrack and not OwnTrack.IsPlaying and not Sliding and not Side then
+			pcall(function()
+				OwnTrack:Play(0.1, 1, ANIM_SPEED)
+			end)
+		end
+	end
+
+	Conn(RunService.Heartbeat:Connect(function()
+		if Stopped then
+			return
+		end
+
+		Drive(HoldingNow())
+		SignalStep(Holding)
+		AirStep()
+	end))
+
+	local function WatchCharacter(Character)
+		Release()
+		SignalStop()
+		AirStop()
+
+		if Shared.TrackCache then
+			Shared.TrackCache.Weave = nil
+		end
+
+		WatchFrames(Character)
+
+		if not Character then
+			return
+		end
+
+		Conn(Character.ChildRemoved:Connect(function(Child)
+			if Child.Name == "Fight" then
+				Release()
+			end
+		end))
+	end
+
+	WatchCharacter(LocalPlayer.Character)
+
+	Conn(LocalPlayer.CharacterAdded:Connect(function(Character)
+		Hold.Game = false
+		WatchCharacter(Character)
+	end))
+
+	do
+		local PUSH_SPEED = 15
+		local PUSH_TIME = 0.2
+		local PUSH_FORCE = 100000
+		local BASE_SPEED = 10
+		local CUTOFF = 0.9
+
+		local AnimSets = {
+			Boxer = {
+				Front = "rbxassetid://17819683172",
+				Right = "rbxassetid://17819695187",
+				Back = "rbxassetid://17819688197",
+				Left = "rbxassetid://17819691229",
+			},
+			Philly = {
+				Front = "rbxassetid://18312346524",
+				Right = "rbxassetid://18312351760",
+				Back = "rbxassetid://18312344029",
+				Left = "rbxassetid://18312348771",
+			},
+		}
+
+		local Set = AnimSets.Boxer
+		local Enabled = false
+		local Running = false
+		local Facing = nil
+		local Playing = nil
+		local PushId = 0
+		local PushBody, PushAnchor = nil, nil
+		local Loaded = {}
+		local LoadedFor = nil
+
+		local function ClearPush()
+			PushId = PushId + 1
+
+			if PushBody then
+				PushBody:Destroy()
+				PushBody = nil
+			end
+
+			if PushAnchor then
+				PushAnchor:Destroy()
+				PushAnchor = nil
+			end
+		end
+
+		local function Reset()
+			Running = false
+			Facing = nil
+			ClearPush()
+
+			if Playing then
+				pcall(function()
+					Playing:Stop()
+				end)
+
+				Playing = nil
+			end
+
+			local Humanoid = GetHumanoid()
+
+			if Humanoid then
+				Humanoid.WalkSpeed = BASE_SPEED
+			end
+		end
+
+		local function GetTrack(Humanoid, Name)
+			local Animator = Humanoid:FindFirstChildOfClass("Animator")
+
+			if not Animator then
+				return nil
+			end
+
+			if LoadedFor ~= Animator then
+				Loaded = {}
+				LoadedFor = Animator
+			end
+
+			local Id = Set[Name]
+			local Track = Loaded[Id]
+
+			if not Track then
+				local Anim = Instance.new("Animation")
+				Anim.AnimationId = Id
+				Track = Animator:LoadAnimation(Anim)
+				Loaded[Id] = Track
+			end
+
+			return Track
+		end
+
+		local function Push(Root, Direction)
+			ClearPush()
+
+			local Mine = PushId
+
+			PushAnchor = Instance.new("Attachment")
+			PushAnchor.Parent = Root
+
+			PushBody = Instance.new("LinearVelocity")
+			PushBody.Attachment0 = PushAnchor
+			PushBody.MaxForce = PUSH_FORCE
+			PushBody.VectorVelocity = Direction.Unit * PUSH_SPEED
+			PushBody.Parent = Root
+
+			task.delay(PUSH_TIME, function()
+				if Mine == PushId then
+					ClearPush()
+				end
+			end)
+		end
+
+		local function DirectionName(Root, Humanoid)
+			local Local = Root.CFrame:VectorToObjectSpace(Humanoid.MoveDirection)
+
+			if math.abs(Local.Z) > math.abs(Local.X) then
+				return Local.Z < 0 and "Front" or "Back"
+			end
+
+			return Local.X > 0 and "Right" or "Left"
+		end
+
+		Conn(RunService.RenderStepped:Connect(function()
+			if Stopped or not Enabled or not Running then
+				return
+			end
+
+			if HoldOff() then
+				return
+			end
+
+			local Character = LocalPlayer.Character
+			local Humanoid = Character and Character:FindFirstChild("Humanoid")
+			local Root = Character and Character:FindFirstChild("HumanoidRootPart")
+
+			if not Humanoid or not Root then
+				return
+			end
+
+			if Humanoid.MoveDirection.Magnitude < 0.2 then
+				return
+			end
+
+			local Name = DirectionName(Root, Humanoid)
+
+			if Name ~= Facing then
+				Facing = Name
+				Humanoid.WalkSpeed = BASE_SPEED
+
+				if Playing then
+					Playing:Stop()
+				end
+
+				Playing = GetTrack(Humanoid, Name)
+
+				if Playing then
+					Playing:Play()
+				end
+
+				Push(Root, Humanoid.MoveDirection)
+			end
+
+			if Playing and Playing.IsPlaying and Playing.TimePosition >= Playing.Length * CUTOFF then
+				Humanoid.WalkSpeed = 0
+			end
+		end))
+
+		task.spawn(function()
+			local Stats = LocalPlayer:WaitForChild("leaderstats", 10)
+
+			if not Stats then
+				return
+			end
+
+			local StyleValue = Stats:WaitForChild("Style", 5) or Stats:FindFirstChildOfClass("StringValue")
+
+			if not StyleValue then
+				return
+			end
+
+			local function ApplyStyle(Value)
+				local Text = string.lower(tostring(Value))
+
+				if string.find(Text, "philly") then
+					Set = AnimSets.Philly
+					Reset()
+				elseif string.find(Text, "boxer") then
+					Set = AnimSets.Boxer
+					Reset()
+				end
+			end
+
+			ApplyStyle(StyleValue.Value)
+			Conn(StyleValue.Changed:Connect(ApplyStyle))
+		end)
+
+		Conn(LocalPlayer.CharacterAdded:Connect(function()
+			task.wait(0.5)
+			Loaded = {}
+			LoadedFor = nil
+			Reset()
+		end))
+
+		FloatStart = function()
+			if Enabled then
+				Running = true
+			end
+		end
+
+		FloatStop = function()
+			if Enabled then
+				Reset()
+			end
+		end
+
+		FloatToggle = function(State)
+			Enabled = State
+
+			if not Enabled then
+				Reset()
+			end
+		end
+	end
+
+	local function SetV2(State)
+		V2.Enabled = State
+		FloatToggle(State)
+
+		if State then
+			task.spawn(function()
+				if LoadModules() and V2.Enabled then
+					AcquireWeaveBlock()
+				end
+
+				HookInput()
+			end)
+		else
+			Hold.Game = false
+			Release()
+			SignalStop()
+			AirStop()
+			ReleaseWeaveBlock()
+		end
+	end
+
+	OnCleanup(function()
+		Stopped = true
+		V2.Enabled = false
+		Release()
+		SignalStop()
+		AirStop()
+		ReleaseWeaveBlock()
+		FloatToggle(false)
+
+		if FramesConn then
+			FramesConn:Disconnect()
+		end
+	end)
+
+	local V2Toggle = CreateToggle(WeavePage, "Weave Mac V2", false, function(State)
+		if State then
+			for _, Key in ipairs({ "Weave", "AutoWeave" }) do
+				local Control = FeatureControls[Key]
+
+				if Control and Control.Get() then
+					Control.Set(false)
+				end
+			end
+		end
+
+		SetV2(State)
+	end, "WeaveV2")
+	V2Toggle.LayoutOrder = 2
+
+	CreateGap(WeavePage, 6, 3)
+
+	local AirToggle = CreateToggle(WeavePage, "Air Walk", false, function(State)
+		AirWalkOn = State
+
+		if not State then
+			AirStop()
+		end
+	end, "AirWalk")
+	AirToggle.LayoutOrder = 11
+
+	CreateGap(WeavePage, 6, 12)
+end)
+
+RunSection(function()
+	local HitboxOn = false
+	local Range = 7
+	local Transparency = 0.7
+
+	local Tracked = {}
+	local LastSync = 0
+	local DownedUntil = setmetatable({}, { __mode = "k" })
+	local DOWN_HOLD = 0.6
+
+	local DOWN_ATTRIBUTES = { "Ragdoll", "Ragdolled", "Knocked", "KnockedDown", "Downed", "Crit", "Crited", "Stunned" }
+
+	local DOWN_STATES = {
+		[Enum.HumanoidStateType.FallingDown] = true,
+		[Enum.HumanoidStateType.Ragdoll] = true,
+		[Enum.HumanoidStateType.Physics] = true,
+		[Enum.HumanoidStateType.PlatformStanding] = true,
+		[Enum.HumanoidStateType.Dead] = true,
+	}
+
+	local function HitboxActive()
+		return HitboxOn
+	end
+
+	local function IsDowned(Root)
+		local Model = Root.Parent
+		local Humanoid = Model and Model:FindFirstChildOfClass("Humanoid")
+
+		if not Humanoid then
+			return false
+		end
+
+		local Now = os.clock()
+		local Down = false
+
+		local Ok, State = pcall(function()
+			return Humanoid:GetState()
+		end)
+
+		if Ok and DOWN_STATES[State] then
+			Down = true
+		end
+
+		if not Down and Humanoid.PlatformStand then
+			Down = true
+		end
+
+		if not Down then
+			for _, Name in ipairs(DOWN_ATTRIBUTES) do
+				if Model:GetAttribute(Name) == true or Humanoid:GetAttribute(Name) == true then
+					Down = true
+					break
+				end
+			end
+		end
+
+		if not Down and Root.CFrame.UpVector.Y < 0.55 then
+			Down = true
+		end
+
+		if Down then
+			DownedUntil[Root] = Now + DOWN_HOLD
+			return true
+		end
+
+		local Until = DownedUntil[Root]
+
+		return Until ~= nil and Now < Until
+	end
+
+	Shared.IsDowned = IsDowned
+
+	local function Restore(Root)
+		local Data = Tracked[Root]
+
+		if not Data then
+			return
+		end
+
+		Tracked[Root] = nil
+
+		for _, C in ipairs(Data.Conns) do
+			C:Disconnect()
+		end
+
+		if Root.Parent then
+			pcall(function()
+				Root.Size = Data.Size
+				Root.Transparency = Data.Transparency
+				Root.Color = Data.Color
+				Root.Material = Data.Material
+				Root.CanCollide = Data.CanCollide
+			end)
+		end
+	end
+
+	local function Shape(Root)
+		local Target = Vector3.new(Range, Range, Range)
+
+		if Root.Size ~= Target then
+			Root.Size = Target
+		end
+
+		Root.Transparency = Transparency
+		Root.CanCollide = false
+	end
+
+	local function Track(Root)
+		if Tracked[Root] then
+			return
+		end
+
+		local Data = {
+			Size = Root.Size,
+			Transparency = Root.Transparency,
+			Color = Root.Color,
+			Material = Root.Material,
+			CanCollide = Root.CanCollide,
+			Conns = {},
+		}
+
+		Tracked[Root] = Data
+
+		Root.Color = Color3.new(0, 0, 0)
+		Root.Material = Enum.Material.SmoothPlastic
+
+		table.insert(Data.Conns, Root:GetPropertyChangedSignal("Size"):Connect(function()
+			if HitboxActive() then
+				local Target = Vector3.new(Range, Range, Range)
+
+				if Root.Size ~= Target then
+					Root.Size = Target
+				end
+			end
+		end))
+
+		Shape(Root)
+	end
+
+	local function GetTargets()
+		local List = {}
+		local Seen = {}
+		local MyCharacter = LocalPlayer.Character
+
+		local function Add(Model)
+			if not Model or Model == MyCharacter or not Model:IsA("Model") then
+				return
+			end
+
+			local Root = Model:FindFirstChild("HumanoidRootPart")
+
+			if Root and Root:IsA("BasePart") and not Seen[Root] and Model:FindFirstChildOfClass("Humanoid") then
+				Seen[Root] = true
+				List[#List + 1] = Root
+			end
+		end
+
+		for _, Player in ipairs(Players:GetPlayers()) do
+			if Player ~= LocalPlayer then
+				Add(Player.Character)
+			end
+		end
+
+		local Live = workspace:FindFirstChild("Live")
+
+		if Live then
+			for _, Child in ipairs(Live:GetChildren()) do
+				Add(Child)
+			end
+		end
+
+		for _, Child in ipairs(workspace:GetChildren()) do
+			Add(Child)
+		end
+
+		return List
+	end
+
+	local function Sync()
+		local Present = {}
+
+		for _, Root in ipairs(GetTargets()) do
+			local Humanoid = Root.Parent and Root.Parent:FindFirstChildOfClass("Humanoid")
+
+			if Humanoid and Humanoid.Health > 0 and not Shared.ShouldIgnore(Root.Parent, Root) then
+				Present[Root] = true
+				Track(Root)
+			end
+		end
+
+		for Root in pairs(Tracked) do
+			if not Present[Root] or not Root.Parent then
+				Restore(Root)
+			end
+		end
+	end
+
+	local function RestoreAll()
+		for Root in pairs(Tracked) do
+			Restore(Root)
+		end
+	end
+
+	local ReachTable
+	local ReachOriginal = {}
+	local ReachSearched = false
+
+	local function FindReach()
+		if ReachSearched then
+			return ReachTable
+		end
+
+		ReachSearched = true
+
+		pcall(function()
+			for _, Inst in ipairs(ReplicatedStorage:GetDescendants()) do
+				if Inst:IsA("ModuleScript") and Inst.Name == "Config" then
+					local Ok, Result = pcall(require, Inst)
+
+					if Ok and type(Result) == "table"
+						and type(Result.Combat) == "table"
+						and type(Result.Combat.Reach) == "table" then
+
+						ReachTable = Result.Combat.Reach
+
+						for Key, Value in pairs(ReachTable) do
+							if type(Value) == "number" then
+								ReachOriginal[Key] = Value
+							end
+						end
+
+						return
+					end
+				end
+			end
+		end)
+
+		return ReachTable
+	end
+
+	local function ApplyReach()
+		local Reach = FindReach()
+
+		if not Reach then
+			return
+		end
+
+		local Factor = math.max(Range / (ReachOriginal.Bare or 7), 1)
+
+		pcall(function()
+			for Key, Value in pairs(ReachOriginal) do
+				Reach[Key] = Value * Factor
+			end
+		end)
+	end
+
+	local function RestoreReach()
+		if not ReachTable then
+			return
+		end
+
+		pcall(function()
+			for Key, Value in pairs(ReachOriginal) do
+				ReachTable[Key] = Value
+			end
+		end)
+	end
+
+	Conn(RunService.Stepped:Connect(function()
+		if not HitboxActive() then
+			return
+		end
+
+		local Now = os.clock()
+
+		if Now - LastSync >= 0.25 then
+			LastSync = Now
+			Sync()
+		end
+
+		for Root in pairs(Tracked) do
+			if Root.Parent then
+				if Shared.ShouldIgnore(Root.Parent, Root) then
+					Restore(Root)
+				else
+					Shape(Root)
+				end
+			end
+		end
+	end))
+
+	local function Refresh()
+		if HitboxActive() then
+			Sync()
+			ApplyReach()
+		else
+			RestoreAll()
+			RestoreReach()
+		end
+	end
+
+	OnCleanup(function()
+		HitboxOn = false
+		RestoreAll()
+		RestoreReach()
+	end)
+
+	local HitboxToggle = CreateToggle(CombatPage, "Hitbox", false, function(State)
+		HitboxOn = State
+		Refresh()
+	end, "Hitbox")
+	HitboxToggle.LayoutOrder = 4
+
+	local RangeSlider = CreateSlider(CombatPage, "Range", 1, 15, 0.1, 7, function(Value)
+		Range = Value
+
+		if HitboxActive() then
+			for Root in pairs(Tracked) do
+				if Root.Parent then
+					Shape(Root)
+				end
+			end
+
+			ApplyReach()
+		end
+	end, "HitboxRange")
+	RangeSlider.LayoutOrder = 5
+
+	local TransparencySlider = CreateSlider(CombatPage, "Transparency", 0.1, 1, 0.1, 0.7, function(Value)
+		Transparency = Value
+
+		for Root in pairs(Tracked) do
+			if Root.Parent then
+				Root.Transparency = Value
+			end
+		end
+	end, "HitboxTransparency")
+	TransparencySlider.LayoutOrder = 6
+
+	CreateGap(CombatPage, 6, 7)
+end)
+
+RunSection(function()
+	local NoDelayOn = false
+	local PunchGap = 0.1
+
+	local AttackState
+
+	local function LoadAttackState()
+		if AttackState then
+			return true
+		end
+
+		local Ok, Err = pcall(function()
+			local Client = ReplicatedStorage:WaitForChild("Client", 10)
+
+			AttackState = require(Client.Combat.AttackState)
+		end)
+
+
+		return AttackState ~= nil
+	end
+
+	task.spawn(LoadAttackState)
+
+	local LastCanAttack = true
+	local LockStartedAt = 0
+	local LastLoadTry = 0
+
+	Conn(RunService.Heartbeat:Connect(function()
+		if not NoDelayOn then
+			LastCanAttack = true
+			return
+		end
+
+		local Now = os.clock()
+
+		if not AttackState then
+			if Now - LastLoadTry > 2 then
+				LastLoadTry = Now
+				task.spawn(LoadAttackState)
+			end
+
+			return
+		end
+
+		pcall(function()
+			local Active = AttackState.Active
+
+			if not Active then
+				LastCanAttack = true
+				return
+			end
+
+			local CanAttack = Active.CanAttack
+
+			if CanAttack == false and LastCanAttack ~= false then
+				LockStartedAt = Now
+			end
+
+			LastCanAttack = CanAttack
+
+			if CanAttack ~= false then
+				return
+			end
+
+			if not IsAlive() then
+				return
+			end
+
+			if Now - LockStartedAt >= PunchGap then
+				Active.CanAttack = true
+				LastCanAttack = true
+			end
+		end)
+	end))
+
+	local AntiStunOn = false
+	local BaseSpeeds = setmetatable({}, { __mode = "k" })
+
+	Conn(RunService.Heartbeat:Connect(function()
+		if not AntiStunOn then
+			return
+		end
+
+		local Active = AttackState and AttackState.Active
+		local M1 = Active and Active.CurrentM1
+
+		if not M1 then
+			return
+		end
+
+		pcall(function()
+			if not M1.IsPlaying then
+				return
+			end
+
+			local Speed = M1.Speed
+
+			if BaseSpeeds[M1] == nil and Speed > 0.2 then
+				BaseSpeeds[M1] = Speed
+			end
+
+			if Speed > 0 and Speed <= 0.1 then
+				M1:AdjustSpeed(BaseSpeeds[M1] or 1)
+			end
+		end)
+	end))
+
+	local PUNCH_IDS = {
+		"18312333191", "18312335714", "18312338197", "18312340119",
+		"17819438450", "17819441388", "17819444004", "17819446225",
+	}
+
+	local STOMP_IDS = { "18362264385", "17837722603" }
+
+	local PunchSpeedOn = false
+	local StompSpeedOn = false
+	local PunchSpeed = 1.7
+	local StompSpeed = 1
+
+	local TrackKinds = setmetatable({}, { __mode = "k" })
+
+	local function HasId(Track, Ids)
+		local Animation = Track.Animation
+
+		if not Animation then
+			return false
+		end
+
+		local AnimId = tostring(Animation.AnimationId)
+
+		for _, Id in ipairs(Ids) do
+			if string.find(AnimId, Id, 1, true) then
+				return true
+			end
+		end
+
+		return false
+	end
+
+	local function KindOf(Track)
+		local Cached = TrackKinds[Track]
+
+		if Cached ~= nil then
+			return Cached
+		end
+
+		local Kind = false
+
+		if HasId(Track, PUNCH_IDS) then
+			Kind = "punch"
+		elseif HasId(Track, STOMP_IDS) then
+			Kind = "stomp"
+		end
+
+		TrackKinds[Track] = Kind
+
+		return Kind
+	end
+
+	Conn(RunService.Heartbeat:Connect(function()
+		local Character = LocalPlayer.Character
+		local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
+		local Animator = Humanoid and Humanoid:FindFirstChildOfClass("Animator")
+
+		if not Animator then
+			return
+		end
+
+		for _, Track in ipairs(Animator:GetPlayingAnimationTracks()) do
+			local Kind = KindOf(Track)
+
+			if Kind == "punch" and PunchSpeedOn then
+				local Speed = Track.Speed
+
+				if Speed > 0.1 and math.abs(Speed - PunchSpeed) > 0.02 then
+					pcall(function()
+						Track:AdjustSpeed(PunchSpeed)
+					end)
+				end
+			elseif Kind == "stomp" and StompSpeedOn then
+				local Speed = Track.Speed
+
+				if Speed > 0.1 and math.abs(Speed - StompSpeed) > 0.02 then
+					pcall(function()
+						Track:AdjustSpeed(StompSpeed)
+					end)
+				end
+			end
+		end
+	end))
+
+	local NoDelayToggle = CreateToggle(CombatPage, "No Punch Delay", false, function(State)
+		NoDelayOn = State
+
+		if State then
+			task.spawn(LoadAttackState)
+		end
+	end, "NoAttackDelay")
+	NoDelayToggle.LayoutOrder = 8
+
+	local GapSlider = CreateSlider(CombatPage, "Punch Delay", 0, 0.3, 0.01, 0.1, function(Value)
+		PunchGap = Value
+	end, "PunchGap")
+	GapSlider.LayoutOrder = 9
+
+	local NoWeaveDelayToggle = CreateToggle(CombatPage, "No Weave Delay", true, function(State)
+		Shared.NoWeaveDelay = State
+	end, "NoWeaveDelay")
+	NoWeaveDelayToggle.LayoutOrder = 10
+
+	local AntiStunToggle = CreateToggle(CombatPage, "Anti Stun", false, function(State)
+		AntiStunOn = State
+
+		if State then
+			task.spawn(LoadAttackState)
+		end
+	end, "AntiStun")
+	AntiStunToggle.LayoutOrder = 14
+
+	local PunchSpeedToggle = CreateToggle(CombatPage, "Punch Speed", false, function(State)
+		PunchSpeedOn = State
+	end, "PunchSpeedOn")
+	PunchSpeedToggle.LayoutOrder = 15
+
+	local PunchSpeedSlider = CreateSlider(CombatPage, "Punch Speed Amount", 1.2, 5, 0.1, 1.7, function(Value)
+		PunchSpeed = Value
+	end, "PunchSpeed")
+	PunchSpeedSlider.LayoutOrder = 16
+
+	local StompSpeedToggle = CreateToggle(CombatPage, "Stomp Speed", false, function(State)
+		StompSpeedOn = State
+	end, "StompSpeedOn")
+	StompSpeedToggle.LayoutOrder = 17
+
+	local StompSpeedSlider = CreateSlider(CombatPage, "Stomp Speed Amount", 1, 3, 0.1, 1, function(Value)
+		StompSpeed = Value
+	end, "StompSpeed")
+	StompSpeedSlider.LayoutOrder = 18
+end)
+
+RunSection(function()
+	local LastConnectedSeq = { Attack = nil, Stomp = nil }
+
+	local ConnectOn = false
+	local ConnectRange = 8
+
+	local NoStompOn = false
+	local StompGap = 0
+
+	local EasyStompOn = false
+	local EasyStompCount = 1
+	local EasyStompReach = 8
+
+	local LastLoadTry = 0
+
+	local function EnsureModules()
+		if Modules.AttackState and Modules.Combat then
+			return true
+		end
+
+		local Now = os.clock()
+
+		if Now - LastLoadTry > 2 then
+			LastLoadTry = Now
+			task.spawn(LoadModules)
+		end
+
+		return false
+	end
+
+	local function NearestTarget(Range, Filter)
+		local Character = LocalPlayer.Character
+		local Root = Character and Character:FindFirstChild("HumanoidRootPart")
+
+		if not Root then
+			return nil
+		end
+
+		local BestModel = nil
+		local BestDistance = Range
+		local Seen = {}
+
+		local function Check(Model)
+			if not Model or Model == Character or Seen[Model] or not Model:IsA("Model") then
+				return
+			end
+
+			Seen[Model] = true
+
+			local TargetRoot = Model:FindFirstChild("HumanoidRootPart")
+			local Humanoid = Model:FindFirstChildOfClass("Humanoid")
+
+			if not TargetRoot or not Humanoid or Humanoid.Health <= 0 then
+				return
+			end
+			if Filter and Shared.ShouldIgnore(Model, TargetRoot) then
+				return
+			end
+
+			local Distance = (TargetRoot.Position - Root.Position).Magnitude
+
+			if Distance <= BestDistance then
+				BestDistance = Distance
+				BestModel = Model
+			end
+		end
+
+		for _, Player in ipairs(Players:GetPlayers()) do
+			if Player ~= LocalPlayer then
+				Check(Player.Character)
+			end
+		end
+
+		local Live = workspace:FindFirstChild("Live")
+
+		if Live then
+			for _, Child in ipairs(Live:GetChildren()) do
+				Check(Child)
+			end
+		end
+
+		return BestModel
+	end
+
+	local HAND_PARTS = { "RightHand", "LeftHand", "Right Arm", "Left Arm" }
+	local FOOT_PARTS = { "RightFoot", "LeftFoot", "Right Leg", "Left Leg" }
+
+	local function ClosestLimb(Character, Names, Position)
+		local Best = nil
+		local BestDistance = math.huge
+
+		for _, Name in ipairs(Names) do
+			local Part = Character:FindFirstChild(Name)
+
+			if Part and Part:IsA("BasePart") then
+				local Distance = (Part.Position - Position).Magnitude
+
+				if Distance < BestDistance then
+					BestDistance = Distance
+					Best = Part
+				end
+			end
+		end
+
+		return Best or Character:FindFirstChild("HumanoidRootPart")
+	end
+
+	local function ReportHit(Action, Kind)
+		local Active = Modules.AttackState and Modules.AttackState.Active
+		local Combat = Modules.Combat
+		local Character = LocalPlayer.Character
+
+		if not ConnectOn or not Active or not Combat or not Character or not IsAlive() then
+			return
+		end
+
+		local Current = Kind == "Stomp" and Active.CurrentAction or Active.CurrentM1
+
+		if Current ~= Action then
+			return
+		end
+
+		local StillPlaying = false
+
+		pcall(function()
+			StillPlaying = Action.IsPlaying
+		end)
+
+		if not StillPlaying then
+			return
+		end
+
+		local Model = NearestTarget(ConnectRange, true)
+
+		if not Model then
+			return
+		end
+
+		local TargetPart = Model:FindFirstChild("UpperTorso")
+			or Model:FindFirstChild("Torso")
+			or Model:FindFirstChild("HumanoidRootPart")
+
+		if not TargetPart then
+			return
+		end
+
+		local Limb = ClosestLimb(Character, Kind == "Stomp" and FOOT_PARTS or HAND_PARTS, TargetPart.Position)
+
+		if not Limb then
+			return
+		end
+
+		local Seq = Active.Seq
+
+		if type(Seq) ~= "number" or LastConnectedSeq[Kind] == Seq then
+			return
+		end
+
+		LastConnectedSeq[Kind] = Seq
+
+		pcall(function()
+			Combat.HitReport:Fire(Seq, TargetPart, Limb.Position)
+		end)
+	end
+
+	local LastAttackInputAt = -100
+	local AttackInputHooked = false
+
+	Conn(UserInputService.InputBegan:Connect(function(Input)
+		if Input.UserInputType == Enum.UserInputType.MouseButton1
+			or Input.UserInputType == Enum.UserInputType.Touch
+			or Input.KeyCode == Enum.KeyCode.ButtonR2 then
+			LastAttackInputAt = os.clock()
+		end
+	end))
+
+	local function AttackInputRecent()
+		if os.clock() - LastAttackInputAt <= 0.6 then
+			return true
+		end
+
+		local Held = false
+
+		pcall(function()
+			Held = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
+				or UserInputService:IsGamepadButtonDown(Enum.UserInputType.Gamepad1, Enum.KeyCode.ButtonR2)
+		end)
+
+		return Held
+	end
+
+	local ActionTokens = { Attack = 0, Stomp = 0 }
+
+	local function OnAction(Action, Kind)
+		ActionTokens[Kind] = ActionTokens[Kind] + 1
+
+		local Mine = ActionTokens[Kind]
+		local Fired = false
+		local Marker = nil
+
+		local function Fire()
+			if Fired or Mine ~= ActionTokens[Kind] then
+				return
+			end
+
+			Fired = true
+
+			if Marker then
+				Marker:Disconnect()
+				Marker = nil
+			end
+
+			task.spawn(ReportHit, Action, Kind)
+		end
+
+		pcall(function()
+			Marker = Action:GetMarkerReachedSignal("Start"):Connect(Fire)
+		end)
+
+		task.delay(0.1, Fire)
+	end
+
+	local LastM1 = nil
+	local LastTime = 0
+
+	Conn(RunService.Heartbeat:Connect(function()
+		if not ConnectOn then
+			LastM1 = nil
+			return
+		end
+
+		if not EnsureModules() then
+			return
+		end
+
+		if not AttackInputHooked and Modules.Input then
+			AttackInputHooked = true
+
+			pcall(function()
+				Modules.Input.Began:Connect(function(Action)
+					if Action == "Attack" then
+						LastAttackInputAt = os.clock()
+					end
+				end)
+			end)
+		end
+
+		local Active = Modules.AttackState.Active
+		local M1 = Active and Active.CurrentM1
+
+		if not M1 then
+			LastM1 = nil
+			return
+		end
+
+		local Playing = false
+		local TimePosition = 0
+
+		pcall(function()
+			Playing = M1.IsPlaying
+			TimePosition = M1.TimePosition
+		end)
+
+		local Restarted = Playing and M1 == LastM1 and TimePosition + 0.02 < LastTime
+		LastTime = TimePosition
+
+		if Playing and (M1 ~= LastM1 or Restarted) then
+			LastM1 = M1
+
+			if AttackInputRecent() then
+				OnAction(M1, "Attack")
+			end
+		elseif not Playing then
+			LastM1 = nil
+		end
+	end))
+
+	local function StompPlan(Count)
+		if Count >= 7 then
+			return 2, 6
+		elseif Count == 6 then
+			return 1, 5
+		end
+
+		return 0, Count
+	end
+
+	local function SendStompHit(Model)
+		local Active = Modules.AttackState and Modules.AttackState.Active
+		local Combat = Modules.Combat
+		local Character = LocalPlayer.Character
+
+		if not Active or not Combat or not Character or not IsAlive() then
+			return
+		end
+
+		local Target = Model:FindFirstChild("UpperTorso")
+			or Model:FindFirstChild("Torso")
+			or Model:FindFirstChild("HumanoidRootPart")
+
+		if not Target then
+			return
+		end
+
+		local Foot = ClosestLimb(Character, FOOT_PARTS, Target.Position)
+
+		Active.Seq = (Active.Seq or 0) + 1
+
+		local Seq = Active.Seq
+
+		pcall(function()
+			Combat.Swing:Fire(Seq, "Stomp", "RightHand")
+		end)
+
+		task.wait(0.04)
+
+		if Target.Parent and Foot then
+			pcall(function()
+				Combat.HitReport:Fire(Seq, Target, Foot.Position)
+			end)
+		end
+	end
+
+	local function SendMultiHit(Model)
+		local Active = Modules.AttackState and Modules.AttackState.Active
+		local Combat = Modules.Combat
+		local Character = LocalPlayer.Character
+
+		if not Active or not Combat or not Character or not IsAlive() then
+			return
+		end
+
+		local Target = Model:FindFirstChild("UpperTorso")
+			or Model:FindFirstChild("Torso")
+			or Model:FindFirstChild("HumanoidRootPart")
+
+		if not Target then
+			return
+		end
+
+		local Hand = Character:FindFirstChild("LeftHand") or Character:FindFirstChild("HumanoidRootPart")
+
+		Active.Seq = (Active.Seq or 0) + 1
+
+		local Seq = Active.Seq
+
+		pcall(function()
+			Combat.Swing:Fire(Seq, "Attack", "LeftHand")
+		end)
+
+		task.wait(0.04)
+
+		if Target.Parent and Hand then
+			pcall(function()
+				Combat.HitReport:Fire(Seq, Target, Hand.Position)
+			end)
+		end
+	end
+
+	local function StompMultiFire()
+		if not EasyStompOn or not IsAlive() or not HasFight() then
+			return
+		end
+
+		local Model = NearestTarget(EasyStompReach)
+
+		if not Model then
+			return
+		end
+
+		local Stomps, Hits = StompPlan(EasyStompCount)
+
+		for _ = 1, Stomps do
+			task.spawn(SendStompHit, Model)
+		end
+
+		for _ = 1, Hits do
+			task.spawn(SendMultiHit, Model)
+		end
+	end
+
+	local StompToken = 0
+	local InStomp = false
+	local StompStartedAt = -100
+	local StompMarker = nil
+
+	local function CritWanted()
+		return Shared.IsCritOn ~= nil and Shared.IsCritOn()
+	end
+
+	local function OnStompStart(Active)
+		StompToken = StompToken + 1
+
+		local Mine = StompToken
+		local Fired = false
+
+		if StompMarker then
+			StompMarker:Disconnect()
+			StompMarker = nil
+		end
+
+		local function Fire()
+			if Fired or Mine ~= StompToken then
+				return
+			end
+
+			Fired = true
+
+			if StompMarker then
+				StompMarker:Disconnect()
+				StompMarker = nil
+			end
+
+			if EasyStompOn then
+				StompMultiFire()
+			end
+
+			if CritWanted() and Shared.CritStomp then
+				task.spawn(Shared.CritStomp)
+			end
+		end
+
+		pcall(function()
+			if Active.CurrentAction then
+				StompMarker = Active.CurrentAction:GetMarkerReachedSignal("Start"):Connect(Fire)
+			end
+		end)
+
+		task.delay(0.34, Fire)
+	end
+
+	local function StompTick()
+		if not NoStompOn and not EasyStompOn and not CritWanted() then
+			InStomp = false
+			return
+		end
+
+		local AttackStateModule = Modules.AttackState
+
+		if not AttackStateModule then
+			EnsureModules()
+			return
+		end
+
+		local Active = AttackStateModule.Active
+
+		if not Active then
+			return
+		end
+
+		local Stomping = Active.Stomping == true
+		local IsStomp = Stomping and Active.CurrentKind == "Stomp"
+
+		if IsStomp and not InStomp then
+			InStomp = true
+			StompStartedAt = os.clock()
+			OnStompStart(Active)
+		elseif not Stomping then
+			InStomp = false
+		end
+
+		if NoStompOn and IsStomp and os.clock() - StompStartedAt >= StompGap then
+			Active.CanAttack = true
+			Active.Stomping = false
+		end
+	end
+
+	Conn(RunService.Stepped:Connect(StompTick))
+	Conn(RunService.Heartbeat:Connect(StompTick))
+	Conn(RunService.RenderStepped:Connect(StompTick))
+
+	local ConnectToggle = CreateToggle(CombatPage, "Auto Connect", false, function(State)
+		ConnectOn = State
+
+		if State then
+			task.spawn(LoadModules)
+		end
+	end, "AutoConnect")
+	ConnectToggle.LayoutOrder = 1
+
+	local ConnectSlider = CreateSlider(CombatPage, "Connect Range", 2, 17, 0.1, 8, function(Value)
+		ConnectRange = Value
+	end, "ConnectRange")
+	ConnectSlider.LayoutOrder = 2
+
+	local IgnoreRow = New("Frame", {
+		Size = UDim2.new(1, -2, 0, 42),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		LayoutOrder = 3,
+	}, CombatPage)
+
+	New("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal,
+		Padding = UDim.new(0, 6),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	}, IgnoreRow)
+
+	local IgnoreKnockedToggle = CreateToggle(IgnoreRow, "Ignore Knocked", false, function(State)
+		Shared.IgnoreKnockedOn = State
+	end, "IgnoreKnocked")
+	IgnoreKnockedToggle.Size = UDim2.new(0.5, -3, 0, 42)
+	IgnoreKnockedToggle.LayoutOrder = 1
+
+	local IgnoreTeamToggle = CreateToggle(IgnoreRow, "Ignore Team", false, function(State)
+		Shared.IgnoreTeamOn = State
+	end, "IgnoreTeam")
+	IgnoreTeamToggle.Size = UDim2.new(0.5, -3, 0, 42)
+	IgnoreTeamToggle.LayoutOrder = 2
+
+	local NoStompToggle = CreateToggle(CombatPage, "No Stomp Delay", false, function(State)
+		NoStompOn = State
+
+		if State then
+			task.spawn(LoadModules)
+		end
+	end, "NoStompDelay")
+	NoStompToggle.LayoutOrder = 11
+
+	local StompGapSlider = CreateSlider(CombatPage, "Stomp Gap", 0, 1, 0.01, 0, function(Value)
+		StompGap = Value
+	end, "StompGap2")
+	StompGapSlider.LayoutOrder = 12
+
+	CreateGap(CombatPage, 6, 13)
+
+	local EasyStompToggle = CreateToggle(KaPage, "Stomp Multi", false, function(State)
+		EasyStompOn = State
+
+		if State then
+			task.spawn(LoadModules)
+		end
+	end, "EasyStomp")
+	EasyStompToggle.LayoutOrder = 4
+
+	local EasyStompSlider = CreateSlider(KaPage, "Stomp Multi Amount", 1, 7, 1, 1, function(Value)
+		EasyStompCount = Value
+	end, "EasyStomps")
+	EasyStompSlider.LayoutOrder = 5
+end)
+
+RunSection(function()
+	local CritOn = false
+	local EasyOn = false
+	local EasyCount = 1
+
+	local CritDelay = 0
+	local EasyDelay = 0
+	local EasySpacing = 0
+	local HeavyCooldown = 5.5
+	local Reach = 7
+
+	local LastM1 = nil
+	local LastTime = 0
+	local LastHeavyAt = -100
+	local EasyBusy = false
+
+	local function NearestTarget()
+		local Character = LocalPlayer.Character
+		local Root = Character and Character:FindFirstChild("HumanoidRootPart")
+
+		if not Root then
+			return nil
+		end
+
+		local BestPart = nil
+		local BestDistance = Reach
+
+		local function Check(Model)
+			if not Model or Model == Character or not Model:IsA("Model") then
+				return
+			end
+
+			local TargetRoot = Model:FindFirstChild("HumanoidRootPart")
+			local Humanoid = Model:FindFirstChildOfClass("Humanoid")
+
+			if not TargetRoot or not Humanoid or Humanoid.Health <= 0 then
+				return
+			end
+
+			local Distance = (TargetRoot.Position - Root.Position).Magnitude
+
+			if Distance <= BestDistance then
+				BestDistance = Distance
+				BestPart = Model:FindFirstChild("UpperTorso") or TargetRoot
+			end
+		end
+
+		for _, Player in ipairs(Players:GetPlayers()) do
+			if Player ~= LocalPlayer then
+				Check(Player.Character)
+			end
+		end
+
+		local Live = workspace:FindFirstChild("Live")
+
+		if Live then
+			for _, Child in ipairs(Live:GetChildren()) do
+				Check(Child)
+			end
+		end
+
+		return BestPart
+	end
+
+	local function SendHit(Kind, Hand)
+		local Active = Modules.AttackState and Modules.AttackState.Active
+		local Combat = Modules.Combat
+
+		if not Active or not Combat or not IsAlive() then
+			return false
+		end
+
+		local Target = NearestTarget()
+
+		if not Target then
+			return false
+		end
+
+		Active.Seq = (Active.Seq or 0) + 1
+
+		local Seq = Active.Seq
+		local Character = LocalPlayer.Character
+		local HandPart = Character and (Character:FindFirstChild(Hand) or Character:FindFirstChild("HumanoidRootPart"))
+
+		pcall(function()
+			Combat.Swing:Fire(Seq, Kind, Hand)
+		end)
+
+		task.wait(0.04)
+
+		if Target.Parent and HandPart then
+			pcall(function()
+				Combat.HitReport:Fire(Seq, Target, HandPart.Position)
+			end)
+		end
+
+		return true
+	end
+
+	local function FireHeavy(IgnoreStomp)
+		if not CritOn or not IsAlive() or not HasFight() then
+			return
+		end
+
+		local Now = os.clock()
+
+		if Now - LastHeavyAt < HeavyCooldown then
+			return
+		end
+
+		if not NearestTarget() then
+			return
+		end
+
+		local Active = Modules.AttackState and Modules.AttackState.Active
+
+		if Active and (Active.Weaving or Active.Shoving or Active.Slamming or (not IgnoreStomp and Active.Stomping)) then
+			return
+		end
+
+		LastHeavyAt = Now
+		SendHit("Heavy", "RightHand")
+	end
+
+	Shared.IsCritOn = function()
+		return CritOn
+	end
+
+	Shared.CritStomp = function()
+		FireHeavy(true)
+	end
+
+	local function EasyFire()
+		if not EasyOn or EasyBusy then
+			return
+		end
+
+		EasyBusy = true
+
+		task.spawn(function()
+			task.wait(EasyDelay)
+
+			for Index = 1, EasyCount do
+				if not EasyOn or not IsAlive() or not HasFight() then
+					break
+				end
+
+				SendHit("Attack", "LeftHand")
+
+				if Index < EasyCount then
+					task.wait(EasySpacing)
+				end
+			end
+
+			EasyBusy = false
+		end)
+	end
+
+	Conn(RunService.Heartbeat:Connect(function()
+		if not CritOn and not EasyOn then
+			LastM1 = nil
+			return
+		end
+
+		local Active = Modules.AttackState and Modules.AttackState.Active
+		local M1 = Active and Active.CurrentM1
+		local Playing = false
+		local TimePosition = 0
+
+		if M1 then
+			pcall(function()
+				Playing = M1.IsPlaying
+				TimePosition = M1.TimePosition
+			end)
+		end
+
+		local Restarted = Playing and M1 == LastM1 and TimePosition + 0.02 < LastTime
+		LastTime = TimePosition
+
+		if Playing and (M1 ~= LastM1 or Restarted) then
+			LastM1 = M1
+
+			if CritOn then
+				if CritDelay > 0 then
+					task.delay(CritDelay, function()
+						FireHeavy(false)
+					end)
+				else
+					FireHeavy(false)
+				end
+			end
+
+			if EasyOn then
+				EasyFire()
+			end
+		elseif not Playing then
+			LastM1 = nil
+		end
+	end))
+
+	local CritToggle = CreateToggle(KaPage, "Crit Boost", false, function(State)
+		CritOn = State
+		LastM1 = nil
+
+		if State then
+			task.spawn(LoadModules)
+		end
+	end, "CritBoost")
+	CritToggle.LayoutOrder = 1
+
+	local EasyToggle = CreateToggle(KaPage, "Hit Multi", false, function(State)
+		EasyOn = State
+		LastM1 = nil
+
+		if State then
+			task.spawn(LoadModules)
+		end
+	end, "EasyHit")
+	EasyToggle.LayoutOrder = 2
+
+	local EasySlider = CreateSlider(KaPage, "Hit Multi Amount", 1, 5, 1, 1, function(Value)
+		EasyCount = Value
+	end, "EasyHits")
+	EasySlider.LayoutOrder = 3
+
+	CreateGap(KaPage, 6, 6)
+end)
+
+RunSection(function()
+	local KaOn = false
+	local KaRange = 14.3
+	local CooldownAll = 0
+	local MultiOn = true
+	local MultiCount = 3
+	local CritOn = true
+	local KaMinWeave = 0
+	local CooldownSame = 0
+	local HitDelay = 0
+	local HeavyCooldown = 0
+	local PunchTrigger = true
+	local SWING_LIMIT = 16
+	local SwingTimes = {}
+	local LastHeavyAt = -100
+	local LastAnyAt = -100
+	local LastPlayerAt = {}
+	local WeaveState = {}
+	local WeaveSince = {}
+	local LastWeaveAt = {}
+	local AttrConns = {}
+	local AnimConns = {}
+
+
+
+
+
+	local WEAVE_IDS = {
+		"18312351760", "18312346524", "18312348771", "18312344029",
+		"17819695187", "17819683172", "17819691229", "17819688197",
+	}
+
+	local PUNCH_IDS = {
+		"18312333191", "18312335714", "18312338197", "18312340119",
+		"17819438450", "17819441388", "17819444004", "17819446225",
+	}
+
+
+	local function HasAnyId(Track, Ids)
+		local Anim = Track.Animation
+
+		if not Anim then
+			return false
+		end
+
+		local Id = tostring(Anim.AnimationId)
+
+		for _, X in ipairs(Ids) do
+			if string.find(Id, X, 1, true) then
+				return true
+			end
+		end
+
+		return false
+	end
+
+	local SeenFrames = setmetatable({}, { __mode = "k" })
+
+	local function WeaveSignal(Char)
+		local Frames = Char:GetAttribute("WeaveFrames")
+
+		if type(Frames) == "boolean" then
+			SeenFrames[Char] = true
+		end
+
+		if Frames == true then
+			return true
+		end
+
+		if SeenFrames[Char] then
+			return false
+		end
+
+		local Hum = Char:FindFirstChildOfClass("Humanoid")
+		local Animator = Hum and Hum:FindFirstChildOfClass("Animator")
+
+		if Animator then
+			for _, Track in ipairs(Animator:GetPlayingAnimationTracks()) do
+				if Track.WeightTarget > 0 and HasAnyId(Track, WEAVE_IDS) then
+					return true
+				end
+			end
+		end
+
+		return false
+	end
+
+	local function SwingAllowed(Force)
+		local Now = os.clock()
+
+		for I = #SwingTimes, 1, -1 do
+			if Now - SwingTimes[I] > 1 then
+				table.remove(SwingTimes, I)
+			end
+		end
+
+		if not Force and #SwingTimes >= SWING_LIMIT then
+			return false
+		end
+
+		SwingTimes[#SwingTimes + 1] = Now
+		return true
+	end
+
+	local function SendHit(Kind, Hand, TargetChar, Force)
+		local Active = Modules.AttackState and Modules.AttackState.Active
+		local Combat = Modules.Combat
+		local MyChar = LocalPlayer.Character
+
+		if not Active or not Combat or not MyChar or not TargetChar then
+			return
+		end
+
+		local Target = TargetChar:FindFirstChild("UpperTorso")
+			or TargetChar:FindFirstChild("Torso")
+			or TargetChar:FindFirstChild("HumanoidRootPart")
+
+		if not Target or not SwingAllowed(Force) then
+			return
+		end
+
+		Active.Seq = (Active.Seq or 0) + 1
+
+		local Seq = Active.Seq
+		local HandPart = MyChar:FindFirstChild(Hand) or MyChar:FindFirstChild("HumanoidRootPart")
+
+		pcall(function()
+			Combat.Swing:Fire(Seq, Kind, Hand)
+		end)
+
+		if Target.Parent and HandPart then
+			pcall(function()
+				Combat.HitReport:Fire(Seq, Target, HandPart.Position)
+			end)
+		end
+	end
+
+	local function Targets(MyRoot)
+		local List = {}
+
+		for _, Pl in ipairs(Players:GetPlayers()) do
+			if Pl ~= LocalPlayer and not Shared.IsTeammate(Pl) then
+				local Char = Pl.Character
+				local Root = Char and Char:FindFirstChild("HumanoidRootPart")
+				local Hum = Char and Char:FindFirstChildOfClass("Humanoid")
+
+				if Root and Hum and Hum.Health > 0 then
+					local Dist = (Root.Position - MyRoot.Position).Magnitude
+
+					if Dist <= KaRange then
+						List[#List + 1] = { Char = Char, Dist = Dist }
+					end
+				end
+			end
+		end
+
+		table.sort(List, function(a, b)
+			return a.Dist < b.Dist
+		end)
+
+		return List
+	end
+
+	local function Punish(Primary)
+		if not Modules.Combat then
+			LoadModules()
+		end
+
+		local MyChar = LocalPlayer.Character
+		local Hum = MyChar and MyChar:FindFirstChildOfClass("Humanoid")
+		local MyRoot = MyChar and MyChar:FindFirstChild("HumanoidRootPart")
+
+		if not Hum or Hum.Health <= 0 or not MyRoot or not MyChar:FindFirstChild("Fight") then
+			return
+		end
+
+		local Active = Modules.AttackState and Modules.AttackState.Active
+		local Now = os.clock()
+		local DoHeavy = CritOn
+			and Now - LastHeavyAt >= HeavyCooldown
+			and not (Active and (Active.Weaving or Active.Shoving or Active.Slamming or Active.Stomping))
+
+		if DoHeavy then
+			LastHeavyAt = Now
+		end
+
+		local Ordered = {}
+
+		for _, T in ipairs(Targets(MyRoot)) do
+			if T.Char == Primary then
+				table.insert(Ordered, 1, T)
+			else
+				table.insert(Ordered, T)
+			end
+		end
+
+		for _, T in ipairs(Ordered) do
+			local Force = T.Char == Primary
+
+			SendHit("Attack", "LeftHand", T.Char, Force)
+
+			if DoHeavy then
+				SendHit("Heavy", "RightHand", T.Char, Force)
+			end
+
+			if MultiOn then
+				for _ = 2, MultiCount do
+					SendHit("Attack", "LeftHand", T.Char)
+				end
+			end
+		end
+	end
+
+	local function Fire(Player, Char, Root)
+		if Shared.IsTeammate(Player) then
+			return
+		end
+
+		local Now = os.clock()
+
+		if Now - (LastPlayerAt[Player] or -100) < CooldownSame then
+			return
+		end
+
+		if CooldownAll > 0 and Now - LastAnyAt < CooldownAll then
+			return
+		end
+
+		local MyChar = LocalPlayer.Character
+		local MyRoot = MyChar and MyChar:FindFirstChild("HumanoidRootPart")
+
+		if not MyRoot or (MyRoot.Position - Root.Position).Magnitude > KaRange then
+			return
+		end
+
+		LastAnyAt = Now
+		LastPlayerAt[Player] = Now
+
+		if HitDelay > 0 then
+			task.delay(HitDelay, Punish, Char)
+		else
+			Punish(Char)
+		end
+	end
+
+	local function Evaluate(Player)
+		if not KaOn or Shared.IsTeammate(Player) then
+			WeaveState[Player] = nil
+			WeaveSince[Player] = nil
+			return
+		end
+
+		local Char = Player.Character
+		local Hum = Char and Char:FindFirstChildOfClass("Humanoid")
+		local Root = Char and Char:FindFirstChild("HumanoidRootPart")
+
+		if not Char or not Hum or not Root or Hum.Health <= 0 then
+			WeaveState[Player] = nil
+			WeaveSince[Player] = nil
+			return
+		end
+
+		local Weaving = WeaveSignal(Char)
+		local Was = WeaveState[Player]
+		local Now = os.clock()
+
+		WeaveState[Player] = Weaving
+
+		if Weaving then
+			LastWeaveAt[Player] = Now
+
+			if not Was then
+				WeaveSince[Player] = Now
+			end
+		end
+
+		if Was and not Weaving then
+			if Now - (WeaveSince[Player] or Now) >= KaMinWeave then
+				Fire(Player, Char, Root)
+			end
+		end
+	end
+
+	local function HookAnimator(Player, Char)
+		if AnimConns[Player] then
+			AnimConns[Player]:Disconnect()
+			AnimConns[Player] = nil
+		end
+
+		task.spawn(function()
+			local Hum = Char:WaitForChild("Humanoid", 5)
+			local Animator = Hum and Hum:WaitForChild("Animator", 5)
+
+			if not Animator or Player.Character ~= Char then
+				return
+			end
+
+			AnimConns[Player] = Animator.AnimationPlayed:Connect(function(Track)
+				if not KaOn or Shared.IsTeammate(Player) then
+					return
+				end
+
+				if HasAnyId(Track, WEAVE_IDS) then
+					Evaluate(Player)
+
+					Track.Stopped:Once(function()
+						Evaluate(Player)
+					end)
+				elseif PunchTrigger and HasAnyId(Track, PUNCH_IDS) then
+					if os.clock() - (LastWeaveAt[Player] or -100) <= 0.6 then
+						local Root = Char:FindFirstChild("HumanoidRootPart")
+
+						if Root then
+							Fire(Player, Char, Root)
+						end
+					end
+				end
+			end)
+		end)
+	end
+
+	local function HookPlayer(Player)
+		if Player == LocalPlayer then
+			return
+		end
+
+		local function HookChar(Char)
+			if AttrConns[Player] then
+				AttrConns[Player]:Disconnect()
+				AttrConns[Player] = nil
+			end
+
+			WeaveState[Player] = nil
+			WeaveSince[Player] = nil
+
+			AttrConns[Player] = Char:GetAttributeChangedSignal("WeaveFrames"):Connect(function()
+				Evaluate(Player)
+			end)
+
+			HookAnimator(Player, Char)
+		end
+
+		Conn(Player.CharacterAdded:Connect(HookChar))
+
+		if Player.Character then
+			HookChar(Player.Character)
+		end
+	end
+
+	for _, Player in ipairs(Players:GetPlayers()) do
+		HookPlayer(Player)
+	end
+
+	Conn(Players.PlayerAdded:Connect(HookPlayer))
+
+	Conn(Players.PlayerRemoving:Connect(function(Player)
+		WeaveState[Player] = nil
+		WeaveSince[Player] = nil
+		LastWeaveAt[Player] = nil
+		LastPlayerAt[Player] = nil
+
+		if AttrConns[Player] then
+			AttrConns[Player]:Disconnect()
+			AttrConns[Player] = nil
+		end
+
+		if AnimConns[Player] then
+			AnimConns[Player]:Disconnect()
+			AnimConns[Player] = nil
+		end
+	end))
+
+	local function Poll()
+		if not KaOn then
+			return
+		end
+
+		local MyChar = LocalPlayer.Character
+		local MyRoot = MyChar and MyChar:FindFirstChild("HumanoidRootPart")
+
+		if not MyRoot then
+			return
+		end
+
+		for _, Player in ipairs(Players:GetPlayers()) do
+			if Player ~= LocalPlayer and not Shared.IsTeammate(Player) then
+				local Char = Player.Character
+				local Root = Char and Char:FindFirstChild("HumanoidRootPart")
+
+				if Root and (Root.Position - MyRoot.Position).Magnitude <= KaRange + 6 then
+					pcall(Evaluate, Player)
+				else
+					WeaveState[Player] = nil
+					WeaveSince[Player] = nil
+				end
+			end
+		end
+	end
+
+	Conn(RunService.Heartbeat:Connect(Poll))
+
+	do
+		local StyleOn = false
+		local STYLE_OPTIONS = { "Boxer", "Philly" }
+		local StyleChoice = "Boxer"
+
+		if type(Config.StyleLabChoice) == "string" and table.find(STYLE_OPTIONS, Config.StyleLabChoice) then
+			StyleChoice = Config.StyleLabChoice
+		end
+
+		local function ApplyStyle()
+			if not StyleOn then
+				return
+			end
+
+			local Character = LocalPlayer.Character
+
+			if Character then
+				pcall(function()
+					Character:SetAttribute("Style", StyleChoice)
+				end)
+			end
+		end
+
+		local StyleToggle = CreateToggle(KaPage, "Styles", false, function(State)
+			StyleOn = State
+			ApplyStyle()
+		end, "StyleLabOn")
+		StyleToggle.LayoutOrder = 7
+
+		local StyleHolder = New("Frame", {
+			Size = UDim2.new(1, -2, 0, 40),
+			BackgroundColor3 = ROW_BG,
+			BackgroundTransparency = ROW_TRANSP,
+			BorderSizePixel = 0,
+			LayoutOrder = 8,
+		}, KaPage)
+		Corner(StyleHolder, 8)
+
+		New("TextLabel", {
+			Size = UDim2.new(1, -140, 1, 0),
+			Position = UDim2.new(0, 11, 0, 0),
+			BackgroundTransparency = 1,
+			Text = "Labs",
+			TextColor3 = WHITE,
+			Font = Enum.Font.GothamMedium,
+			TextSize = 13,
+			TextXAlignment = Enum.TextXAlignment.Left,
+		}, StyleHolder)
+
+		local StyleButton = New("TextButton", {
+			Size = UDim2.new(0, 110, 0, 26),
+			Position = UDim2.new(1, -120, 0.5, -13),
+			BackgroundColor3 = CONTROL,
+			Text = StyleChoice,
+			TextColor3 = WHITE,
+			Font = Enum.Font.GothamMedium,
+			TextSize = 12,
+			AutoButtonColor = false,
+			BorderSizePixel = 0,
+		}, StyleHolder)
+		Corner(StyleButton, 7)
+
+		StyleButton.MouseButton1Click:Connect(function()
+			local Index = table.find(STYLE_OPTIONS, StyleChoice) or 1
+			StyleChoice = STYLE_OPTIONS[Index % #STYLE_OPTIONS + 1]
+			StyleButton.Text = StyleChoice
+			Config.StyleLabChoice = StyleChoice
+			SaveConfig()
+			ApplyStyle()
+		end)
+
+		Conn(LocalPlayer.CharacterAdded:Connect(function()
+			task.wait(1.5)
+			ApplyStyle()
+		end))
+
+		task.spawn(function()
+			task.wait(1.5)
+			ApplyStyle()
+
+			while UIAlive do
+				if StyleOn then
+					local Character = LocalPlayer.Character
+
+					if Character and Character:GetAttribute("Style") ~= StyleChoice then
+						pcall(function()
+							Character:SetAttribute("Style", StyleChoice)
+						end)
+					end
+				end
+
+				task.wait(0.5)
+			end
+		end)
+	end
+
+	CreateGap(KaPage, 6, 9)
+
+	local KaToggle = CreateToggle(KaPage, "Auto Ka", false, function(Value)
+		KaOn = Value
+
+		if Value then
+			task.spawn(LoadModules)
+		else
+			table.clear(WeaveState)
+			table.clear(WeaveSince)
+		end
+	end, "AutoKa")
+	KaToggle.LayoutOrder = 10
+
+	local KaRangeSlider = CreateSlider(KaPage, "Range", 3, 30, 0.1, 14.3, function(Value)
+		KaRange = Value
+	end, "AutoKaRange2")
+	KaRangeSlider.LayoutOrder = 11
+
+	local CdAllSlider = CreateSlider(KaPage, "Cooldown All", 0, 2, 0.01, 0, function(Value)
+		CooldownAll = Value
+	end, "AutoKaCdAll3")
+	CdAllSlider.LayoutOrder = 12
+
+	local MultiToggle = CreateToggle(KaPage, "Hits", true, function(State)
+		MultiOn = State
+	end, "AutoKaMultis")
+	MultiToggle.LayoutOrder = 13
+
+	local MultiSlider = CreateSlider(KaPage, "Amount", 1, 5, 1, 3, function(Value)
+		MultiCount = Value
+	end, "AutoKaMultiAmt2")
+	MultiSlider.LayoutOrder = 14
+
+	local KaCritToggle = CreateToggle(KaPage, "Heavy", true, function(State)
+		CritOn = State
+	end, "AutoKaCrit")
+	KaCritToggle.LayoutOrder = 15
+end)
+
+RunSection(function()
+	local NoBounceOn = false
+	local OriginalGravity = workspace.Gravity
+	local BounceUntil = 0
+	local StateConn
+
+	local function BindHumanoid(Character)
+		if StateConn then
+			StateConn:Disconnect()
+			StateConn = nil
+		end
+
+		local Humanoid = Character and Character:WaitForChild("Humanoid", 5)
+
+		if not Humanoid then
+			return
+		end
+
+		StateConn = Humanoid.StateChanged:Connect(function(_, NewState)
+			if NewState == Enum.HumanoidStateType.Landed then
+				BounceUntil = os.clock() + 0.25
+			elseif NewState == Enum.HumanoidStateType.Jumping then
+				BounceUntil = 0
+			end
+		end)
+	end
+
+	if LocalPlayer.Character then
+		task.spawn(BindHumanoid, LocalPlayer.Character)
+	end
+
+	Conn(LocalPlayer.CharacterAdded:Connect(function(Character)
+		task.spawn(BindHumanoid, Character)
+	end))
+
+	Conn(RunService.Heartbeat:Connect(function()
+		if not NoBounceOn then
+			return
+		end
+
+		if workspace.Gravity ~= 700 then
+			workspace.Gravity = 700
+		end
+
+		if os.clock() >= BounceUntil then
+			return
+		end
+
+		local Character = LocalPlayer.Character
+		local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
+		local Root = Character and Character:FindFirstChild("HumanoidRootPart")
+
+		if not Humanoid or not Root then
+			return
+		end
+
+		if Humanoid.FloorMaterial ~= Enum.Material.Air then
+			local Velocity = Root.AssemblyLinearVelocity
+
+			if Velocity.Y > 0 then
+				Root.AssemblyLinearVelocity = Vector3.new(Velocity.X, 0, Velocity.Z)
+			end
+		end
+	end))
+
+	OnCleanup(function()
+		if NoBounceOn then
+			workspace.Gravity = OriginalGravity
+		end
+
+		if StateConn then
+			StateConn:Disconnect()
+		end
+	end)
+
+	local NoBounceToggle = CreateToggle(MiscPage, "No Bounce", false, function(State)
+		NoBounceOn = State
+
+		if State then
+			OriginalGravity = workspace.Gravity
+			workspace.Gravity = 700
+		else
+			workspace.Gravity = OriginalGravity
+			BounceUntil = 0
+		end
+	end, "NoBounce")
+	NoBounceToggle.LayoutOrder = 1
+
+	local AntiFlingOn = false
+	local Disabled = setmetatable({}, { __mode = "k" })
+
+	local function RestoreCollisions()
+		for Part in pairs(Disabled) do
+			Disabled[Part] = nil
+
+			if Part.Parent then
+				pcall(function()
+					Part.CanCollide = true
+				end)
+			end
+		end
+	end
+
+	Conn(RunService.Stepped:Connect(function()
+		if not AntiFlingOn then
+			return
+		end
+
+		for _, Player in ipairs(Players:GetPlayers()) do
+			local Character = Player ~= LocalPlayer and Player.Character
+
+			if Character then
+				for _, Part in ipairs(Character:GetDescendants()) do
+					if Part:IsA("BasePart") and Part.CanCollide then
+						Disabled[Part] = true
+						Part.CanCollide = false
+					end
+				end
+			end
+		end
+	end))
+
+	Conn(RunService.Heartbeat:Connect(function()
+		if not AntiFlingOn then
+			return
+		end
+
+		local Character = LocalPlayer.Character
+		local Root = Character and Character:FindFirstChild("HumanoidRootPart")
+
+		if not Root then
+			return
+		end
+
+		if Root.AssemblyAngularVelocity.Magnitude > 60 then
+			Root.AssemblyAngularVelocity = Vector3.zero
+		end
+
+		if Root.AssemblyLinearVelocity.Magnitude > 250 then
+			Root.AssemblyLinearVelocity = Vector3.zero
+		end
+	end))
+
+	OnCleanup(function()
+		AntiFlingOn = false
+		RestoreCollisions()
+	end)
+
+	local AntiFlingToggle = CreateToggle(FlingPage, "Anti Fling", false, function(Enabled)
+		AntiFlingOn = Enabled
+
+		if not Enabled then
+			RestoreCollisions()
+		end
+	end, "AntiFling")
+	AntiFlingToggle.LayoutOrder = 30
+
+	local PRO_PLACE = 86098085533596
+	local ProBusy = false
+
+	local ProButton = New("TextButton", {
+		Size = UDim2.new(1, -2, 0, 40),
+		BackgroundColor3 = Color3.fromRGB(32, 98, 214),
+		Text = "TP to PRO",
+		TextColor3 = WHITE,
+		Font = Enum.Font.GothamBold,
+		TextSize = 14,
+		AutoButtonColor = true,
+		BorderSizePixel = 0,
+		LayoutOrder = 31,
+	}, FlingPage)
+	Corner(ProButton, 8)
+	ProButton.LayoutOrder = 51
+	New("UIStroke", { Color = Color3.fromRGB(90, 150, 255), Thickness = 1, Transparency = 0.4 }, ProButton)
+
+	ProButton.MouseButton1Click:Connect(function()
+		if ProBusy then
+			return
+		end
+
+		ProBusy = true
+		ProButton.Text = "Teleporting..."
+
+		task.spawn(function()
+			local Open = {}
+
+			pcall(function()
+				local Url = "https://games.roblox.com/v1/games/" .. PRO_PLACE .. "/servers/Public?sortOrder=Asc&limit=100"
+				local Result = HttpService:JSONDecode(game:HttpGet(Url))
+
+				for _, Server in ipairs(Result.data or {}) do
+					if Server.playing < Server.maxPlayers and Server.id ~= game.JobId then
+						table.insert(Open, Server.id)
+					end
+				end
+			end)
+
+			pcall(function()
+				if #Open > 0 then
+					TeleportService:TeleportToPlaceInstance(PRO_PLACE, Open[math.random(1, #Open)], LocalPlayer)
+				else
+					TeleportService:Teleport(PRO_PLACE, LocalPlayer)
+				end
+			end)
+
+			task.wait(6)
+			ProButton.Text = "TP to PRO"
+			ProBusy = false
+		end)
+	end)
+end)
+
+RunSection(function()
+	local FovOn = false
+	local FovValue = 70
+	local FovOriginal = nil
+
+	pcall(function()
+		RunService:UnbindFromRenderStep("IsaevFov")
+	end)
+
+	RunService:BindToRenderStep("IsaevFov", Enum.RenderPriority.Camera.Value + 2, function()
+		if not FovOn then
+			return
+		end
+
+		local Camera = workspace.CurrentCamera
+
+		if Camera and Camera.FieldOfView ~= FovValue then
+			Camera.FieldOfView = FovValue
+		end
+	end)
+
+	local FovToggle = CreateToggle(SettingsPage, "FOV Changer", false, function(State)
+		local Camera = workspace.CurrentCamera
+
+		if State then
+			FovOriginal = Camera and Camera.FieldOfView or 70
+		elseif Camera and FovOriginal then
+			Camera.FieldOfView = FovOriginal
+		end
+
+		FovOn = State
+	end, "FovOn")
+	FovToggle.LayoutOrder = 1
+
+	local FovSlider = CreateSlider(SettingsPage, "Field of View", 30, 120, 1, 70, function(Value)
+		FovValue = Value
+	end, "Fov")
+	FovSlider.LayoutOrder = 2
+
+	local StretchOn = false
+	local StretchValue = 0.75
+
+	pcall(function()
+		RunService:UnbindFromRenderStep("IsaevStretch")
+	end)
+
+	RunService:BindToRenderStep("IsaevStretch", Enum.RenderPriority.Camera.Value + 3, function()
+		if not StretchOn then
+			return
+		end
+
+		local Camera = workspace.CurrentCamera
+
+		if Camera then
+			Camera.CFrame = Camera.CFrame * CFrame.new(0, 0, 0, 1, 0, 0, 0, StretchValue, 0, 0, 0, 1)
+		end
+	end)
+
+	local StretchToggle = CreateToggle(SettingsPage, "Stretch Res", false, function(State)
+		StretchOn = State
+	end, "StretchOn")
+	StretchToggle.LayoutOrder = 3
+
+	local StretchSlider = CreateSlider(SettingsPage, "Stretch", 0.4, 1, 0.01, 0.75, function(Value)
+		StretchValue = Value
+	end, "Stretch")
+	StretchSlider.LayoutOrder = 4
+
+	OnCleanup(function()
+		pcall(function()
+			RunService:UnbindFromRenderStep("IsaevFov")
+		end)
+
+		pcall(function()
+			RunService:UnbindFromRenderStep("IsaevStretch")
+		end)
+	end)
+
+	local HeadlessOn = false
+	local HeadOriginal = setmetatable({}, { __mode = "k" })
+
+	local function ApplyHeadless()
+		local Character = LocalPlayer.Character
+		local Head = Character and Character:FindFirstChild("Head")
+
+		if not Head then
+			return
+		end
+
+		if HeadlessOn then
+			if HeadOriginal[Head] == nil then
+				HeadOriginal[Head] = Head.Transparency
+			end
+
+			Head.Transparency = 1
+
+			for _, Child in ipairs(Head:GetChildren()) do
+				if Child:IsA("Decal") then
+					if HeadOriginal[Child] == nil then
+						HeadOriginal[Child] = Child.Transparency
+					end
+
+					Child.Transparency = 1
+				end
+			end
+		else
+			for Inst, Value in pairs(HeadOriginal) do
+				if Inst.Parent then
+					Inst.Transparency = Value
+				end
+			end
+
+			table.clear(HeadOriginal)
+		end
+	end
+
+	Conn(RunService.Heartbeat:Connect(function()
+		if HeadlessOn then
+			ApplyHeadless()
+		end
+	end))
+
+	OnCleanup(function()
+		HeadlessOn = false
+		ApplyHeadless()
+	end)
+
+	CreateGap(MiscPage, 6, 45)
+
+	local HeadlessToggle = CreateToggle(VisualPage, "Headless", false, function(State)
+		HeadlessOn = State
+		ApplyHeadless()
+	end, "Headless")
+	HeadlessToggle.LayoutOrder = 46
+
+	local Show = { Head = true, Hair = true, Face = true, Neck = true }
+	local AccessoryOriginal = setmetatable({}, { __mode = "k" })
+
+	local function CategoryOf(Accessory)
+		local Type
+
+		pcall(function()
+			Type = Accessory.AccessoryType
+		end)
+
+		if Type == Enum.AccessoryType.Hat then
+			return "Head"
+		elseif Type == Enum.AccessoryType.Hair then
+			return "Hair"
+		elseif Type == Enum.AccessoryType.Face then
+			return "Face"
+		elseif Type == Enum.AccessoryType.Neck then
+			return "Neck"
+		end
+
+		local Handle = Accessory:FindFirstChild("Handle")
+
+		if Handle then
+			if Handle:FindFirstChild("HairAttachment") then
+				return "Hair"
+			elseif Handle:FindFirstChild("HatAttachment") then
+				return "Head"
+			elseif Handle:FindFirstChild("FaceFrontAttachment") or Handle:FindFirstChild("FaceCenterAttachment") then
+				return "Face"
+			elseif Handle:FindFirstChild("NeckAttachment") then
+				return "Neck"
+			end
+		end
+
+		return nil
+	end
+
+	local function SetAccessoryVisible(Accessory, Visible)
+		for _, Part in ipairs(Accessory:GetDescendants()) do
+			if Part:IsA("BasePart") then
+				if Visible then
+					local Original = AccessoryOriginal[Part]
+
+					if Original ~= nil then
+						Part.Transparency = Original
+						AccessoryOriginal[Part] = nil
+					end
+				else
+					if AccessoryOriginal[Part] == nil then
+						AccessoryOriginal[Part] = Part.Transparency
+					end
+
+					Part.Transparency = 1
+				end
+			end
+		end
+	end
+
+	local function ApplyAccessories()
+		local Character = LocalPlayer.Character
+
+		if not Character then
+			return
+		end
+
+		for _, Child in ipairs(Character:GetChildren()) do
+			if Child:IsA("Accessory") then
+				local Category = CategoryOf(Child)
+
+				if Category then
+					SetAccessoryVisible(Child, Show[Category])
+				end
+			end
+		end
+	end
+
+	local function WatchCharacter(Character)
+		Character.ChildAdded:Connect(function(Child)
+			if Child:IsA("Accessory") then
+				Child:WaitForChild("Handle", 3)
+				task.wait()
+
+				local Category = CategoryOf(Child)
+
+				if Category and not Show[Category] then
+					SetAccessoryVisible(Child, false)
+				end
+			end
+		end)
+	end
+
+	if LocalPlayer.Character then
+		WatchCharacter(LocalPlayer.Character)
+	end
+
+	Conn(LocalPlayer.CharacterAdded:Connect(function(Character)
+		WatchCharacter(Character)
+
+		task.wait(1)
+		ApplyAccessories()
+	end))
+
+	for Index, Name in ipairs({ "Head", "Hair", "Face", "Neck" }) do
+		local AccessoryToggle = CreateToggle(VisualPage, Name, true, function(State)
+			Show[Name] = State
+			ApplyAccessories()
+		end)
+		AccessoryToggle.LayoutOrder = 46 + Index
+	end
+
+	local SetProp
+	local AddedConns = {}
+	local BoostOn = false
+	local BoostOriginal = setmetatable({}, { __mode = "k" })
+	local SavedQuality
+
+	SetProp = function(Inst, Prop, Value)
+		pcall(function()
+			local Saved = BoostOriginal[Inst]
+
+			if not Saved then
+				Saved = {}
+				BoostOriginal[Inst] = Saved
+			end
+
+			if Saved[Prop] == nil then
+				Saved[Prop] = Inst[Prop]
+			end
+
+			Inst[Prop] = Value
+		end)
+	end
+
+	local function InCharacter(Inst)
+		local Model = Inst:FindFirstAncestorOfClass("Model")
+		return Model ~= nil and Model:FindFirstChildOfClass("Humanoid") ~= nil
+	end
+
+	local function Reduce(Inst)
+		if Inst:IsA("Terrain") then
+			return
+		end
+
+		if Inst:IsA("BasePart") then
+			SetProp(Inst, "Material", Enum.Material.SmoothPlastic)
+			SetProp(Inst, "Reflectance", 0)
+			SetProp(Inst, "CastShadow", false)
+		elseif Inst:IsA("ParticleEmitter")
+			or Inst:IsA("Trail")
+			or Inst:IsA("Smoke")
+			or Inst:IsA("Fire")
+			or Inst:IsA("Sparkles")
+			or Inst:IsA("PostEffect")
+			or Inst:IsA("Clouds") then
+			SetProp(Inst, "Enabled", false)
+		elseif Inst:IsA("Decal") then
+			if not InCharacter(Inst) then
+				SetProp(Inst, "Transparency", 1)
+			end
+		elseif Inst:IsA("Atmosphere") then
+			SetProp(Inst, "Density", 0)
+			SetProp(Inst, "Haze", 0)
+		end
+	end
+
+	local function EnableBoost()
+		pcall(function()
+			SavedQuality = settings().Rendering.QualityLevel
+			settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+		end)
+
+		SetProp(Lighting, "GlobalShadows", false)
+		SetProp(Lighting, "ShadowSoftness", 0)
+		SetProp(Lighting, "EnvironmentDiffuseScale", 0)
+		SetProp(Lighting, "EnvironmentSpecularScale", 0)
+
+		local Terrain = workspace:FindFirstChildOfClass("Terrain")
+
+		if Terrain then
+			SetProp(Terrain, "WaterWaveSize", 0)
+			SetProp(Terrain, "WaterWaveSpeed", 0)
+			SetProp(Terrain, "WaterReflectance", 0)
+			SetProp(Terrain, "Decoration", false)
+		end
+
+		for _, Inst in ipairs(Lighting:GetDescendants()) do
+			Reduce(Inst)
+		end
+
+		table.insert(AddedConns, Lighting.DescendantAdded:Connect(function(Inst)
+			if BoostOn then
+				Reduce(Inst)
+			end
+		end))
+
+		table.insert(AddedConns, workspace.DescendantAdded:Connect(function(Inst)
+			if BoostOn then
+				Reduce(Inst)
+			end
+		end))
+
+		task.spawn(function()
+			local Count = 0
+
+			for _, Inst in ipairs(workspace:GetDescendants()) do
+				if not BoostOn then
+					return
+				end
+
+				Reduce(Inst)
+				Count = Count + 1
+
+				if Count % 400 == 0 then
+					task.wait()
+				end
+			end
+		end)
+	end
+
+	local function DisableBoost()
+		for _, C in ipairs(AddedConns) do
+			C:Disconnect()
+		end
+
+		table.clear(AddedConns)
+
+		for Inst, Props in pairs(BoostOriginal) do
+			for Prop, Value in pairs(Props) do
+				pcall(function()
+					Inst[Prop] = Value
+				end)
+			end
+		end
+
+		table.clear(BoostOriginal)
+
+		if SavedQuality then
+			pcall(function()
+				settings().Rendering.QualityLevel = SavedQuality
+			end)
+		end
+	end
+
+	OnCleanup(function()
+		BoostOn = false
+		DisableBoost()
+	end)
+
+	local BoostToggle = CreateToggle(VisualPage, "Boost Fps", false, function(State)
+		BoostOn = State
+
+		if State then
+			EnableBoost()
+		else
+			DisableBoost()
+		end
+	end, "BoostFps")
+	BoostToggle.LayoutOrder = 52
+	BoostToggle.BackgroundColor3 = Color3.fromRGB(28, 78, 44)
+	BoostToggle.BackgroundTransparency = 0.15
+	New("UIStroke", { Color = Color3.fromRGB(70, 150, 90), Thickness = 1, Transparency = 0.4 }, BoostToggle)
+end)
+
+RunSection(function()
+	local SensOn = false
+	local SensValue = 1
+	local UserGameSettings = UserSettings():GetService("UserGameSettings")
+	local SensDefault = 1
+	local GamepadDefault = 1
+
+	pcall(function()
+		SensDefault = UserGameSettings.MouseSensitivity
+	end)
+
+	pcall(function()
+		GamepadDefault = UserGameSettings.GamepadCameraSensitivity
+	end)
+
+	if not SensDefault or SensDefault <= 0 then
+		SensDefault = 1
+	end
+
+	if not GamepadDefault or GamepadDefault <= 0 then
+		GamepadDefault = 1
+	end
+
+	local function ApplySens()
+		pcall(function()
+			local Want = SensDefault * SensValue
+
+			if math.abs(UserGameSettings.MouseSensitivity - Want) > 0.0001 then
+				UserGameSettings.MouseSensitivity = Want
+			end
+		end)
+
+		pcall(function()
+			local Want = GamepadDefault * SensValue
+
+			if math.abs(UserGameSettings.GamepadCameraSensitivity - Want) > 0.0001 then
+				UserGameSettings.GamepadCameraSensitivity = Want
+			end
+		end)
+	end
+
+	local function RestoreSens()
+		pcall(function()
+			UserGameSettings.MouseSensitivity = SensDefault
+		end)
+
+		pcall(function()
+			UserGameSettings.GamepadCameraSensitivity = GamepadDefault
+		end)
+	end
+
+	pcall(function()
+		RunService:UnbindFromRenderStep("IsaevSens")
+	end)
+
+	RunService:BindToRenderStep("IsaevSens", Enum.RenderPriority.Camera.Value - 1, function()
+		if SensOn then
+			ApplySens()
+		end
+	end)
+
+	Conn(RunService.Heartbeat:Connect(function()
+		if SensOn then
+			ApplySens()
+		end
+	end))
+
+	pcall(function()
+		Conn(UserGameSettings:GetPropertyChangedSignal("MouseSensitivity"):Connect(function()
+			if SensOn then
+				ApplySens()
+			end
+		end))
+	end)
+
+	pcall(function()
+		Conn(UserGameSettings:GetPropertyChangedSignal("GamepadCameraSensitivity"):Connect(function()
+			if SensOn then
+				ApplySens()
+			end
+		end))
+	end)
+
+	Conn(UserInputService.GamepadConnected:Connect(function()
+		if SensOn then
+			task.wait(0.2)
+			ApplySens()
+		end
+	end))
+
+	if IsMobile then
+		local CameraTouch = nil
+		local LastTouchPos = nil
+
+		Conn(UserInputService.TouchStarted:Connect(function(Touch, GameProcessed)
+			local Camera = workspace.CurrentCamera
+
+			if not SensOn or SensValue == 1 or not Camera then
+				return
+			end
+
+			local IsLeftHalf = Touch.Position.X < Camera.ViewportSize.X * 0.45
+
+			if not GameProcessed and not IsLeftHalf and not CameraTouch then
+				CameraTouch = Touch
+				LastTouchPos = Touch.Position
+			end
+		end))
+
+		Conn(UserInputService.TouchMoved:Connect(function(Touch)
+			local Camera = workspace.CurrentCamera
+
+			if not SensOn or Touch ~= CameraTouch or not LastTouchPos or not Camera then
+				return
+			end
+
+			local Delta = Touch.Position - LastTouchPos
+			LastTouchPos = Touch.Position
+
+			local Factor = (SensValue - 1) * 0.003
+			Camera.CFrame = Camera.CFrame * CFrame.Angles(0, -Delta.X * Factor, 0)
+		end))
+
+		Conn(UserInputService.TouchEnded:Connect(function(Touch)
+			if Touch == CameraTouch then
+				CameraTouch = nil
+				LastTouchPos = nil
+			end
+		end))
+	end
+
+	OnCleanup(function()
+		pcall(function()
+			RunService:UnbindFromRenderStep("IsaevSens")
+		end)
+
+		if SensOn then
+			RestoreSens()
+		end
+	end)
+
+	local SensToggle = CreateToggle(SettingsPage, "Sens Changer", false, function(State)
+		SensOn = State
+
+		if State then
+			ApplySens()
+		else
+			RestoreSens()
+		end
+	end, "SensOn")
+	SensToggle.LayoutOrder = 5
+
+	local SensSlider = CreateSlider(SettingsPage, "Sensitivity", 0.5, 10, 0.1, 1, function(Value)
+		SensValue = Value
+
+		if SensOn then
+			ApplySens()
+		end
+	end, "SensMultiplier")
+	SensSlider.LayoutOrder = 6
+
+	CreateGap(SettingsPage, 6, 7)
+end)
+
+RunSection(function()
+	local CONFIGS_FILE = "IsaevConfigs.json"
+	local CODE_PREFIX = "ISAEV1:"
+	local RISKS = { "legit", "risky", "blatant" }
+	local RISK_COLORS = {
+		legit = Color3.fromRGB(110, 200, 130),
+		risky = Color3.fromRGB(240, 170, 60),
+		blatant = Color3.fromRGB(230, 90, 90),
+	}
+
+	local Store = { autoload = nil, configs = {} }
+	local SelectedName = nil
+	local ConfirmDeleteAt = 0
+
+	local B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+	local function Base64Encode(data)
+		local out = {}
+
+		for i = 1, #data, 3 do
+			local a, b, c = string.byte(data, i, i + 2)
+			local n = a * 65536 + (b or 0) * 256 + (c or 0)
+			local i1 = math.floor(n / 262144) % 64
+			local i2 = math.floor(n / 4096) % 64
+			local i3 = math.floor(n / 64) % 64
+			local i4 = n % 64
+
+			out[#out + 1] = string.sub(B64, i1 + 1, i1 + 1)
+				.. string.sub(B64, i2 + 1, i2 + 1)
+				.. (b and string.sub(B64, i3 + 1, i3 + 1) or "=")
+				.. (c and string.sub(B64, i4 + 1, i4 + 1) or "=")
+		end
+
+		return table.concat(out)
+	end
+
+	local function B64Value(ch)
+		if ch == "" or ch == "=" then
+			return nil
+		end
+
+		local p = string.find(B64, ch, 1, true)
+		return p and (p - 1) or nil
+	end
+
+	local function Base64Decode(data)
+		data = string.gsub(data, "[^%w%+/=]", "")
+
+		local out = {}
+
+		for i = 1, #data, 4 do
+			local v1 = B64Value(string.sub(data, i, i))
+			local v2 = B64Value(string.sub(data, i + 1, i + 1))
+			local v3 = B64Value(string.sub(data, i + 2, i + 2))
+			local v4 = B64Value(string.sub(data, i + 3, i + 3))
+
+			if not v1 or not v2 then
+				return nil
+			end
+
+			local n = v1 * 262144 + v2 * 4096 + (v3 or 0) * 64 + (v4 or 0)
+
+			out[#out + 1] = string.char(math.floor(n / 65536) % 256)
+				.. (v3 and string.char(math.floor(n / 256) % 256) or "")
+				.. (v4 and string.char(n % 256) or "")
+		end
+
+		return table.concat(out)
+	end
+
+	local function SnapshotCombat()
+		local t = {}
+
+		for Key, Control in pairs(FeatureControls) do
+			t[Key] = Control.Get()
+		end
+
+		return t
+	end
+
+	local function SnapshotMenu()
+		return {
+			w = math.floor(Main.AbsoluteSize.X + 0.5),
+			h = math.floor(Main.AbsoluteSize.Y + 0.5),
+		}
+	end
+
+	local function ApplyCombat(t)
+		if type(t) ~= "table" then
+			return
+		end
+
+		for Key, Value in pairs(t) do
+			local Control = FeatureControls[Key]
+
+			if Control then
+				pcall(Control.Set, Value)
+			end
+		end
+	end
+
+	local function ApplyMenu(t)
+		if type(t) ~= "table" then
+			return
+		end
+
+		if type(t.w) == "number" and type(t.h) == "number" then
+			Main.Size = UDim2.fromOffset(math.clamp(t.w, MIN_W, MAX_W), math.clamp(t.h, MIN_H, MAX_H))
+		end
+	end
+
+	local function LoadStore()
+		pcall(function()
+			if type(isfile) == "function" and type(readfile) == "function" and isfile(CONFIGS_FILE) then
+				local decoded = HttpService:JSONDecode(readfile(CONFIGS_FILE))
+
+				if type(decoded) == "table" and type(decoded.configs) == "table" then
+					Store = { autoload = decoded.autoload, configs = decoded.configs }
+				end
+			end
+		end)
+
+		if type(Store.autoload) ~= "string" then
+			Store.autoload = nil
+		end
+	end
+
+	local function SaveStore()
+		pcall(function()
+			if type(writefile) == "function" then
+				writefile(CONFIGS_FILE, HttpService:JSONEncode({
+					autoload = Store.autoload,
+					configs = Store.configs,
+				}))
+			end
+		end)
+	end
+
+	local function SortedNames()
+		local names = {}
+
+		for name in pairs(Store.configs) do
+			table.insert(names, name)
+		end
+
+		table.sort(names, function(a, b)
+			return string.lower(a) < string.lower(b)
+		end)
+
+		return names
+	end
+
+	local function UniqueName(base)
+		base = string.sub(base, 1, 24)
+
+		if Store.configs[base] == nil then
+			return base
+		end
+
+		local i = 2
+
+		while Store.configs[base .. " " .. i] ~= nil do
+			i = i + 1
+		end
+
+		return base .. " " .. i
+	end
+
+	local Status, NameBox, ImportBox, DeleteButton, ListBox
+	local RiskButtons = {}
+	local AutoSwitch, AutoKnob
+	local ListRows = {}
+	local RebuildList, UpdateControls
+
+	local StatusToken = 0
+
+	local function SetStatus(text, good)
+		StatusToken = StatusToken + 1
+
+		local Mine = StatusToken
+
+		if Status then
+			Status.Text = text
+			Status.TextColor3 = good and GOOD or BAD
+		end
+
+		task.delay(5, function()
+			if Mine == StatusToken and Status and Status.Parent then
+				Status.Text = ""
+			end
+		end)
+	end
+
+	RebuildList = function()
+		for _, r in ipairs(ListRows) do
+			r:Destroy()
+		end
+
+		table.clear(ListRows)
+
+		local names = SortedNames()
+
+		if #names == 0 then
+			table.insert(ListRows, New("TextLabel", {
+				Size = UDim2.new(1, 0, 0, 28),
+				BackgroundTransparency = 1,
+				Text = "no configs yet",
+				TextColor3 = DIM,
+				Font = Enum.Font.GothamMedium,
+				TextSize = 11,
+			}, ListBox))
+
+			return
+		end
+
+		for i, name in ipairs(names) do
+			local cfg = Store.configs[name]
+			local risk = (type(cfg) == "table" and RISK_COLORS[cfg.risk] and cfg.risk) or "legit"
+			local IsAutoload = Store.autoload == name
+
+			local Row = New("TextButton", {
+				Size = UDim2.new(1, 0, 0, 26),
+				BackgroundColor3 = CONTROL,
+				BackgroundTransparency = (name == SelectedName) and 0.1 or 0.5,
+				Text = "",
+				AutoButtonColor = false,
+				BorderSizePixel = 0,
+				LayoutOrder = i,
+			}, ListBox)
+			Corner(Row, 6)
+
+			New("TextLabel", {
+				Size = UDim2.new(1, -118, 1, 0),
+				Position = UDim2.new(0, 8, 0, 0),
+				BackgroundTransparency = 1,
+				Text = name,
+				TextColor3 = WHITE,
+				Font = Enum.Font.GothamBold,
+				TextSize = 11,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				TextTruncate = Enum.TextTruncate.AtEnd,
+			}, Row)
+
+			New("TextLabel", {
+				Size = UDim2.new(0, 110, 1, 0),
+				Position = UDim2.new(1, -116, 0, 0),
+				BackgroundTransparency = 1,
+				Text = (IsAutoload and "autoload · " or "") .. risk,
+				TextColor3 = RISK_COLORS[risk],
+				Font = Enum.Font.GothamMedium,
+				TextSize = 10,
+				TextXAlignment = Enum.TextXAlignment.Right,
+			}, Row)
+
+			Row.MouseButton1Click:Connect(function()
+				SelectedName = name
+				ConfirmDeleteAt = 0
+				RebuildList()
+				UpdateControls()
+			end)
+
+			table.insert(ListRows, Row)
+		end
+	end
+
+	UpdateControls = function()
+		local cfg = SelectedName and Store.configs[SelectedName]
+		local risk = cfg and cfg.risk
+
+		for i, opt in ipairs(RISKS) do
+			local B = RiskButtons[i]
+
+			if B then
+				local on = (risk == opt)
+				B.BackgroundColor3 = S.A1
+				B.BackgroundTransparency = on and 0.15 or 1
+				B.TextColor3 = on and BLACK or DIM
+			end
+		end
+
+		if AutoSwitch then
+			local on = SelectedName ~= nil and Store.autoload == SelectedName
+			AutoSwitch.BackgroundColor3 = on and S.A1 or CONTROL
+			AutoKnob.Position = on and UDim2.new(1, -17, 0.5, -7) or UDim2.new(0, 3, 0.5, -7)
+		end
+	end
+
+	table.insert(Refreshers, function()
+		UpdateControls()
+	end)
+
+	local function SelectedConfig()
+		local cfg = SelectedName and Store.configs[SelectedName]
+
+		if not cfg then
+			SetStatus("select a config from the list first", false)
+			return nil
+		end
+
+		return cfg
+	end
+
+	local function NewConfigData(risk)
+		return { risk = risk, combat = SnapshotCombat(), menu = SnapshotMenu() }
+	end
+
+	local function CreateConfig()
+		local name = string.match(NameBox.Text, "^%s*(.-)%s*$")
+
+		if name == "" then
+			name = "my config"
+		end
+
+		name = string.sub(name, 1, 24)
+
+		if Store.configs[name] then
+			SetStatus("'" .. name .. "' already exists - pick another name or use Overwrite", false)
+			return
+		end
+
+		Store.configs[name] = NewConfigData("legit")
+		SelectedName = name
+		SaveStore()
+		RebuildList()
+		UpdateControls()
+		SetStatus("created '" .. name .. "'", true)
+	end
+
+	local function LoadSelected(parts)
+		local cfg = SelectedConfig()
+
+		if not cfg then
+			return
+		end
+
+		if parts ~= "menu" then
+			ApplyCombat(cfg.combat)
+		end
+
+		if parts ~= "combat" then
+			ApplyMenu(cfg.menu)
+		end
+
+		Apply()
+
+		local what = parts == "combat" and "combat only" or (parts == "menu" and "menu only" or "everything")
+		SetStatus("loaded '" .. SelectedName .. "' (" .. what .. ")", true)
+	end
+
+	local function OverwriteSelected()
+		local cfg = SelectedConfig()
+
+		if not cfg then
+			return
+		end
+
+		cfg.combat = SnapshotCombat()
+		cfg.menu = SnapshotMenu()
+		SaveStore()
+		SetStatus("overwrote '" .. SelectedName .. "' with your current setup", true)
+	end
+
+	local function DeleteSelected()
+		local cfg = SelectedConfig()
+
+		if not cfg then
+			return
+		end
+
+		if os.clock() - ConfirmDeleteAt > 3 then
+			ConfirmDeleteAt = os.clock()
+			DeleteButton.Text = "Sure?"
+
+			task.delay(3, function()
+				if DeleteButton and DeleteButton.Parent then
+					DeleteButton.Text = "Delete"
+				end
+			end)
+
+			return
+		end
+
+		ConfirmDeleteAt = 0
+		DeleteButton.Text = "Delete"
+
+		local name = SelectedName
+		Store.configs[name] = nil
+
+		if Store.autoload == name then
+			Store.autoload = nil
+		end
+
+		SelectedName = nil
+		SaveStore()
+		RebuildList()
+		UpdateControls()
+		SetStatus("deleted '" .. name .. "'", true)
+	end
+
+	local function DuplicateSelected()
+		local cfg = SelectedConfig()
+
+		if not cfg then
+			return
+		end
+
+		local Copy = HttpService:JSONDecode(HttpService:JSONEncode(cfg))
+		local name = UniqueName(SelectedName .. " copy")
+
+		Store.configs[name] = Copy
+		SelectedName = name
+		SaveStore()
+		RebuildList()
+		UpdateControls()
+		SetStatus("duplicated as '" .. name .. "'", true)
+	end
+
+	local function RefreshListAction()
+		LoadStore()
+
+		if SelectedName and not Store.configs[SelectedName] then
+			SelectedName = nil
+		end
+
+		RebuildList()
+		UpdateControls()
+		SetStatus("list refreshed", true)
+	end
+
+	local function ToggleAutoload()
+		if not SelectedConfig() then
+			return
+		end
+
+		if Store.autoload == SelectedName then
+			Store.autoload = nil
+			SetStatus("autoload off", true)
+		else
+			Store.autoload = SelectedName
+			SetStatus("'" .. SelectedName .. "' will load automatically", true)
+		end
+
+		SaveStore()
+		RebuildList()
+		UpdateControls()
+	end
+
+	local function SetRisk(opt)
+		local cfg = SelectedConfig()
+
+		if not cfg then
+			return
+		end
+
+		cfg.risk = opt
+		SaveStore()
+		RebuildList()
+		UpdateControls()
+	end
+
+	local function CopySelected()
+		local cfg = SelectedConfig()
+
+		if not cfg then
+			return
+		end
+
+		local payload = { n = SelectedName, risk = cfg.risk, combat = cfg.combat, menu = cfg.menu }
+		local code = CODE_PREFIX .. Base64Encode(HttpService:JSONEncode(payload))
+		local copied = false
+
+		if type(setclipboard) == "function" then
+			copied = pcall(setclipboard, code)
+		elseif type(toclipboard) == "function" then
+			copied = pcall(toclipboard, code)
+		end
+
+		if copied then
+			SetStatus("copied '" .. SelectedName .. "' as a code", true)
+		else
+			ImportBox.Text = code
+			SetStatus("no clipboard access - the code is in the import box, copy it from there", false)
+		end
+	end
+
+	local function ImportCode()
+		local text = string.gsub(ImportBox.Text, "%s+", "")
+
+		if string.sub(text, 1, #CODE_PREFIX) ~= CODE_PREFIX then
+			SetStatus("that isn't a valid config code", false)
+			return
+		end
+
+		local raw = Base64Decode(string.sub(text, #CODE_PREFIX + 1))
+		local ok, data = false, nil
+
+		if raw then
+			ok, data = pcall(function()
+				return HttpService:JSONDecode(raw)
+			end)
+		end
+
+		if not ok or type(data) ~= "table" or (type(data.combat) ~= "table" and type(data.menu) ~= "table") then
+			SetStatus("that code is damaged or not from this script", false)
+			return
+		end
+
+		local risk = table.find(RISKS, data.risk) and data.risk or "risky"
+		local name = UniqueName((type(data.n) == "string" and data.n ~= "") and data.n or "imported")
+
+		Store.configs[name] = {
+			risk = risk,
+			combat = type(data.combat) == "table" and data.combat or {},
+			menu = type(data.menu) == "table" and data.menu or {},
+		}
+
+		SelectedName = name
+		ImportBox.Text = ""
+		SaveStore()
+		RebuildList()
+		UpdateControls()
+		SetStatus("imported as '" .. name .. "'", true)
+	end
+
+	local Order = 0
+
+	local function NextOrder()
+		Order = Order + 1
+		return Order
+	end
+
+	local function Label(parent, text, size)
+		return New("TextLabel", {
+			Size = size,
+			BackgroundTransparency = 1,
+			Text = text,
+			TextColor3 = DIM,
+			Font = Enum.Font.GothamMedium,
+			TextSize = 11,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextWrapped = true,
+		}, parent)
+	end
+
+	local function Note(text)
+		local L = Label(ConfigsPage, text, UDim2.new(1, 0, 0, 16))
+		L.LayoutOrder = NextOrder()
+		return L
+	end
+
+	local function Section(text)
+		local L = New("TextLabel", {
+			Size = UDim2.new(1, 0, 0, 20),
+			BackgroundTransparency = 1,
+			Text = text,
+			TextColor3 = WHITE,
+			Font = Enum.Font.GothamBold,
+			TextSize = 12,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			LayoutOrder = NextOrder(),
+		}, ConfigsPage)
+
+		New("Frame", {
+			Size = UDim2.new(1, 0, 0, 1),
+			Position = UDim2.new(0, 0, 1, -1),
+			BackgroundColor3 = WHITE,
+			BackgroundTransparency = 0.6,
+			BorderSizePixel = 0,
+		}, L)
+	end
+
+	local function MakeButton(parent, text, callback, size, pos)
+		local B = New("TextButton", {
+			Size = size,
+			Position = pos or UDim2.new(0, 0, 0, 0),
+			BackgroundColor3 = CONTROL,
+			Text = text,
+			TextColor3 = WHITE,
+			Font = Enum.Font.GothamMedium,
+			TextSize = 11,
+			AutoButtonColor = false,
+			BorderSizePixel = 0,
+		}, parent)
+		Corner(B, 8)
+
+		B.MouseEnter:Connect(function()
+			TweenService:Create(B, TweenInfo.new(0.12), { BackgroundColor3 = Color3.fromRGB(44, 46, 74) }):Play()
+		end)
+
+		B.MouseLeave:Connect(function()
+			TweenService:Create(B, TweenInfo.new(0.12), { BackgroundColor3 = CONTROL }):Play()
+		end)
+
+		B.MouseButton1Click:Connect(callback)
+
+		return B
+	end
+
+	local function FullButton(text, callback)
+		local B = MakeButton(ConfigsPage, text, callback, UDim2.new(1, 0, 0, 30))
+		B.LayoutOrder = NextOrder()
+		return B
+	end
+
+	local function ButtonRow(defs)
+		local Row = New("Frame", {
+			Size = UDim2.new(1, 0, 0, 30),
+			BackgroundTransparency = 1,
+			LayoutOrder = NextOrder(),
+		}, ConfigsPage)
+
+		local n = #defs
+		local buttons = {}
+
+		for i, d in ipairs(defs) do
+			buttons[i] = MakeButton(Row, d[1], d[2], UDim2.new(1 / n, -4, 1, 0), UDim2.new((i - 1) / n, 2, 0, 0))
+		end
+
+		return buttons
+	end
+
+	local function MakeBox(placeholder, default)
+		local Row = New("Frame", {
+			Size = UDim2.new(1, 0, 0, 26),
+			BackgroundTransparency = 1,
+			LayoutOrder = NextOrder(),
+		}, ConfigsPage)
+
+		local Box = New("TextBox", {
+			Size = UDim2.new(1, 0, 1, 0),
+			BackgroundColor3 = CONTROL,
+			BackgroundTransparency = 0.4,
+			BorderSizePixel = 0,
+			Text = default or "",
+			PlaceholderText = placeholder,
+			TextColor3 = WHITE,
+			PlaceholderColor3 = DIM,
+			Font = Enum.Font.GothamMedium,
+			TextSize = 12,
+			ClearTextOnFocus = false,
+			ClipsDescendants = true,
+			TextXAlignment = Enum.TextXAlignment.Left,
+		}, Row)
+		Corner(Box, 8)
+		New("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }, Box)
+
+		return Box
+	end
+
+	New("TextLabel", {
+		Size = UDim2.new(1, 0, 0, 22),
+		BackgroundTransparency = 1,
+		Text = "Configs",
+		TextColor3 = WHITE,
+		Font = Enum.Font.GothamBlack,
+		TextSize = 15,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		LayoutOrder = NextOrder(),
+	}, ConfigsPage)
+
+	Status = New("TextLabel", {
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundTransparency = 1,
+		Text = "",
+		TextColor3 = GOOD,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 11,
+		TextWrapped = true,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		LayoutOrder = NextOrder(),
+	}, ConfigsPage)
+
+	Section("NEW CONFIG")
+	Note("name your config, then create it")
+	NameBox = MakeBox("config name", "my config")
+	FullButton("Create Config", CreateConfig)
+	Note("saves every toggle and slider plus the window size")
+
+	Section("SAVED CONFIGS")
+
+	ListBox = New("ScrollingFrame", {
+		Size = UDim2.new(1, 0, 0, 120),
+		BackgroundColor3 = PANEL,
+		BackgroundTransparency = CARD_ALPHA,
+		BorderSizePixel = 0,
+		ScrollBarThickness = 3,
+		ScrollBarImageColor3 = DIM,
+		CanvasSize = UDim2.new(0, 0, 0, 0),
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		ScrollingDirection = Enum.ScrollingDirection.Y,
+		LayoutOrder = NextOrder(),
+	}, ConfigsPage)
+	Corner(ListBox, 8)
+	New("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, ListBox)
+	New("UIPadding", {
+		PaddingLeft = UDim.new(0, 4),
+		PaddingRight = UDim.new(0, 6),
+		PaddingTop = UDim.new(0, 4),
+		PaddingBottom = UDim.new(0, 4),
+	}, ListBox)
+
+	do
+		local Row = New("Frame", {
+			Size = UDim2.new(1, 0, 0, 46),
+			BackgroundTransparency = 1,
+			LayoutOrder = NextOrder(),
+		}, ConfigsPage)
+
+		Label(Row, "Risk Tag", UDim2.new(1, 0, 0, 16))
+
+		local Holder = New("Frame", {
+			Size = UDim2.new(1, 0, 0, 24),
+			Position = UDim2.new(0, 0, 0, 20),
+			BackgroundColor3 = CONTROL,
+			BackgroundTransparency = 0.4,
+			BorderSizePixel = 0,
+		}, Row)
+		Corner(Holder, 8)
+
+		local n = #RISKS
+
+		for i, opt in ipairs(RISKS) do
+			local B = New("TextButton", {
+				Size = UDim2.new(1 / n, -4, 1, -4),
+				Position = UDim2.new((i - 1) / n, 2, 0, 2),
+				BackgroundColor3 = S.A1,
+				BackgroundTransparency = 1,
+				Text = opt,
+				TextColor3 = DIM,
+				Font = Enum.Font.GothamMedium,
+				TextSize = 10,
+				AutoButtonColor = false,
+			}, Holder)
+			Corner(B, 6)
+
+			B.MouseButton1Click:Connect(function()
+				SetRisk(opt)
+			end)
+
+			RiskButtons[i] = B
+		end
+	end
+
+	do
+		local B = ButtonRow({
+			{ "Load", function() LoadSelected("all") end },
+			{ "Overwrite", OverwriteSelected },
+			{ "Delete", DeleteSelected },
+		})
+
+		DeleteButton = B[3]
+	end
+
+	ButtonRow({
+		{ "Load Combat Only", function() LoadSelected("combat") end },
+		{ "Load Menu Only", function() LoadSelected("menu") end },
+	})
+
+	FullButton("Duplicate", DuplicateSelected)
+	FullButton("Refresh List", RefreshListAction)
+
+	do
+		local Row = New("Frame", {
+			Size = UDim2.new(1, 0, 0, 24),
+			BackgroundTransparency = 1,
+			LayoutOrder = NextOrder(),
+		}, ConfigsPage)
+
+		local L = Label(Row, "Autoload selected", UDim2.new(1, -46, 1, 0))
+		L.TextColor3 = WHITE
+
+		AutoSwitch = New("TextButton", {
+			Size = UDim2.new(0, 38, 0, 20),
+			Position = UDim2.new(1, -38, 0.5, -10),
+			BackgroundColor3 = CONTROL,
+			Text = "",
+			AutoButtonColor = false,
+		}, Row)
+		Corner(AutoSwitch, UDim.new(1, 0))
+
+		AutoKnob = New("Frame", {
+			Size = UDim2.new(0, 14, 0, 14),
+			Position = UDim2.new(0, 3, 0.5, -7),
+			BackgroundColor3 = WHITE,
+			BorderSizePixel = 0,
+		}, AutoSwitch)
+		Corner(AutoKnob, UDim.new(1, 0))
+
+		AutoSwitch.MouseButton1Click:Connect(ToggleAutoload)
+	end
+
+	Section("SHARE CONFIGS")
+	FullButton("Copy Selected As Code", CopySelected)
+	Note("Import Code")
+	ImportBox = MakeBox("paste a config code", "")
+	FullButton("Import As New Config", ImportCode)
+
+	LoadStore()
+
+	if Store.autoload and Store.configs[Store.autoload] then
+		SelectedName = Store.autoload
+	end
+
+	RebuildList()
+	UpdateControls()
+
+	if SelectedName and Store.autoload == SelectedName then
+		task.delay(1, function()
+			if not UIAlive then
+				return
+			end
+
+			local cfg = Store.configs[Store.autoload]
+
+			if cfg then
+				ApplyCombat(cfg.combat)
+				ApplyMenu(cfg.menu)
+				Apply()
+				SetStatus("autoloaded '" .. Store.autoload .. "'", true)
+			end
+		end)
+	end
+end)
+
+if IsMobile then
+	local ToggleGui = New("ScreenGui", {
+		Name = "IsaevAutoWeaveToggle",
+		ResetOnSpawn = false,
+		IgnoreGuiInset = true,
+		DisplayOrder = 10,
+	}, CoreGui)
+
+	local OpenButton = New("TextButton", {
+		Size = UDim2.new(0, 38, 0, 38),
+		Position = UDim2.new(0, 8, 0.5, -19),
+		BackgroundColor3 = BLACK,
+		Text = "I",
+		TextColor3 = WHITE,
+		Font = Enum.Font.GothamBold,
+		TextSize = 18,
+		AutoButtonColor = true,
+		BorderSizePixel = 0,
+	}, ToggleGui)
+	Corner(OpenButton, UDim.new(1, 0))
+	New("UIStroke", { Color = GREY, Thickness = 1 }, OpenButton)
+
+	OpenButton.MouseButton1Click:Connect(function()
+		if isOpen then
+			Close()
+		else
+			Open()
+		end
+	end)
+
+	ScreenGui.Destroying:Connect(function()
+		ToggleGui:Destroy()
+	end)
+end
+
+Main.Visible = false
+Glow.Visible = false
+task.defer(Open)
